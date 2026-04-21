@@ -65,7 +65,8 @@ Console.WriteLine();
 Console.WriteLine("1. Test full EmailMonitor pipeline (fetch → summarize → calendar → Telegram)");
 Console.WriteLine("2. Test Telegram only (send a test message)");
 Console.WriteLine("3. Test Gmail only (fetch and list school emails)");
-Console.WriteLine("4. Exit");
+Console.WriteLine("4. Test Evening Digest (calendar events → Claude digest → Telegram)");
+Console.WriteLine("5. Exit");
 Console.WriteLine();
 Console.Write("Choose: ");
 
@@ -81,6 +82,9 @@ switch (choice)
         break;
     case "3":
         await TestGmail();
+        break;
+    case "4":
+        await TestEveningDigest();
         break;
     default:
         Console.WriteLine("Bye!");
@@ -154,6 +158,62 @@ async Task TestTelegram()
     Console.WriteLine("── Sending test message to Telegram... ──");
     await telegram.SendAlertAsync("🏫 *Alfred — Test Message*\n\nAlfred is working\\! This is a test notification\\.");
     Console.WriteLine("Sent! Check your Telegram group.");
+}
+
+async Task TestEveningDigest()
+{
+    Console.WriteLine();
+    var lookback = alfredOptions.Value.LookbackHours;
+
+    // Fetch recent emails from in-memory state (will be empty unless option 1 was run first)
+    var since = DateTimeOffset.UtcNow.AddHours(-lookback);
+    var recentEmails = await stateService.GetEmailsSinceAsync(since);
+    Console.WriteLine($"── Found {recentEmails.Count} processed email(s) in state (last {lookback}h) ──");
+    foreach (var e in recentEmails)
+        Console.WriteLine($"   - [{e.SenderName}] {e.Subject}");
+
+    // Fetch real upcoming calendar events
+    var schoolDaysAhead = alfredOptions.Value.SchoolDaysAhead;
+    Console.WriteLine();
+    Console.WriteLine($"── Fetching upcoming calendar events ({schoolDaysAhead} school days)... ──");
+    var upcomingEvents = await calendarService.GetUpcomingEventsAsync(schoolDaysAhead);
+    Console.WriteLine($"   Found {upcomingEvents.Count} event(s):");
+    foreach (var ev in upcomingEvents)
+    {
+        var date = ev.Start.DateTimeDateTimeOffset?.ToString("ddd d MMM") ?? ev.Start.Date ?? "TBD";
+        Console.WriteLine($"   - {date}: {ev.Summary}");
+    }
+
+    if (recentEmails.Count == 0 && upcomingEvents.Count == 0)
+    {
+        Console.WriteLine();
+        Console.WriteLine("No emails or events to include. Run option 1 first to process emails,");
+        Console.WriteLine("or check that the shared calendar has upcoming events.");
+        Console.Write("Generate digest anyway? (y/n): ");
+        if (Console.ReadLine()?.Trim().ToLower() != "y")
+            return;
+    }
+
+    // Build digest with Claude
+    Console.WriteLine();
+    Console.WriteLine("── Building evening digest with Claude... ──");
+    var digestMessage = await summarizer.BuildEveningDigestAsync(recentEmails, upcomingEvents);
+
+    Console.WriteLine();
+    Console.WriteLine("── Digest preview: ──");
+    Console.WriteLine(digestMessage);
+
+    Console.WriteLine();
+    Console.Write("Send to Telegram? (y/n): ");
+    if (Console.ReadLine()?.Trim().ToLower() == "y")
+    {
+        await telegram.SendAlertAsync(digestMessage);
+        Console.WriteLine("Sent!");
+    }
+    else
+    {
+        Console.WriteLine("Skipped.");
+    }
 }
 
 async Task TestGmail()

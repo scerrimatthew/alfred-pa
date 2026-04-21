@@ -128,28 +128,36 @@ public class ClaudeSummarizerService : ISummarizerService
 
             1. "telegramMessage": Format using Telegram HTML. Follow this template exactly:
 
-               📩 <b>Subject line here</b>
+               📩 <b>SUBJECT LINE HERE</b>
 
                2-3 sentence summary paragraph.
 
-               ✅ <b>What to prepare:</b>
+               ━━━━━━━━━━━━━━━
+
+               ✅ <b>WHAT TO PREPARE</b>
+
                • Item one
                • Item two
 
-               📅 <b>Calendar:</b>
+               📅 <b>CALENDAR</b>
+
                • Event name — Date
 
-               🔗 <b>Links:</b>
+               🔗 <b>LINKS</b>
+
                • <a href="url">Title</a>
 
                Rules:
-               - Subject line in bold tags, no emoji prefix
+               - Subject line in UPPERCASE bold with 📩 emoji prefix
+               - Section headers must be UPPERCASE bold with the emoji prefix shown above
+               - Add a blank line before AND after each section header for clear visual spacing
+               - Add the ━━━━━━━━━━━━━━━ separator line only once, right after the summary paragraph
                - Summary: plain text paragraph, no bullets
-               - "What to prepare:" only if there are actionable items for parents
-               - "Calendar:" only if calendar events were created
-               - "Links:" only if there are links. Give each a short descriptive title. Use <a href="url">Title</a> format.
+               - "WHAT TO PREPARE" only if there are actionable items for parents
+               - "CALENDAR" only if calendar events were created
+               - "LINKS" only if there are links. Give each a short descriptive title. Use <a href="url">Title</a> format.
                - Use • (bullet character) for list items, — (em dash) to separate event names from dates
-               - Blank line before each section header for spacing
+               - Only use emojis on section headers. Do NOT use emojis in bullet point content
                - Omit sections with no content
                - Only use these HTML tags: <b>, <a href="">. No other tags.
 
@@ -195,24 +203,29 @@ public class ClaudeSummarizerService : ISummarizerService
 
             Format using Telegram HTML with these sections:
 
-            <b>Alfred — Evening Digest</b>
+            🏫 <b>Good Evening!</b>
             Today's date
 
-            <b>Today's emails</b>
+            ━━━━━━━━━━━━━━━
+
+            📩 <b>TODAY'S EMAILS</b>
             Summarize each email received today
 
-            <b>Tomorrow</b>
+            ⏰ <b>TOMORROW</b>
             What's happening tomorrow, highlight what to prepare
 
-            <b>Coming up</b>
+            📅 <b>COMING UP</b>
             Upcoming weekday events (skip weekends), up to 5 school days
 
-            <b>To prepare tonight</b>
+            🎒 <b>TO PREPARE TONIGHT</b>
             What parents need to get ready for tomorrow
 
             Rules:
-            - Use <b> for section headers, • for bullets, — for dashes
-            - Blank line between sections
+            - Section headers must be UPPERCASE bold with the emoji prefix, exactly as shown above
+            - Add a blank line before AND after each section header for clear visual spacing
+            - Add the ━━━━━━━━━━━━━━━ separator line only once, right after the date
+            - Use • for bullets, — for dashes
+            - Only use emojis on section headers (the emoji prefix shown above). Do NOT use emojis in bullet point content
             - If a section has no content, skip it entirely
             - Only use <b> and <a href=""> tags
 
