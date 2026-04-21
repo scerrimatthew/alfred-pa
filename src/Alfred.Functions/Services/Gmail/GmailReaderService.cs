@@ -95,9 +95,12 @@ public partial class GmailReaderService : IGmailReaderService
                 : DateTimeOffset.UtcNow;
 
             var rawHtml = ExtractRawHtml(message.Payload);
-            var links = rawHtml is not null ? ExtractLinks(rawHtml) : [];
+            var linkUrls = rawHtml is not null ? ExtractLinks(rawHtml) : [];
             var body = ExtractBody(message.Payload);
-            var pdfAttachments = await ExtractPdfAttachmentsAsync(gmailService, message);
+
+            var documents = new List<LinkedDocument>();
+            documents.AddRange(await ExtractEmailAttachmentsAsync(gmailService, message));
+            documents.AddRange(await DownloadLinkedDocumentsAsync(linkUrls));
 
             return new SchoolEmail
             {
@@ -107,8 +110,7 @@ public partial class GmailReaderService : IGmailReaderService
                 SenderEmail = ExtractEmail(from),
                 ReceivedDate = receivedDate,
                 Body = body,
-                PdfAttachments = pdfAttachments,
-                Links = links
+                Documents = documents
             };
         }
         catch (Exception ex)
@@ -160,11 +162,11 @@ public partial class GmailReaderService : IGmailReaderService
         return null;
     }
 
-    private async Task<List<PdfAttachment>> ExtractPdfAttachmentsAsync(GmailService gmailService, Message message)
+    private async Task<List<LinkedDocument>> ExtractEmailAttachmentsAsync(GmailService gmailService, Message message)
     {
-        var attachments = new List<PdfAttachment>();
+        var documents = new List<LinkedDocument>();
 
-        if (message.Payload.Parts is null) return attachments;
+        if (message.Payload.Parts is null) return documents;
 
         foreach (var part in GetAllParts(message.Payload))
         {
@@ -182,13 +184,15 @@ public partial class GmailReaderService : IGmailReaderService
 
                 var extractedText = _pdfExtractor.ExtractText(pdfBytes, part.Filename ?? "attachment.pdf");
 
-                attachments.Add(new PdfAttachment
+                documents.Add(new LinkedDocument
                 {
-                    FileName = part.Filename ?? "attachment.pdf",
+                    Title = part.Filename ?? "attachment.pdf",
+                    Url = $"attachment:{part.Filename}",
+                    Source = LinkedDocumentSource.EmailAttachment,
                     ExtractedText = extractedText
                 });
 
-                _logger.LogInformation("Extracted text from PDF: {FileName} ({Length} chars)",
+                _logger.LogInformation("Extracted text from attachment: {FileName} ({Length} chars)",
                     part.Filename, extractedText.Length);
             }
             catch (Exception ex)
@@ -197,7 +201,89 @@ public partial class GmailReaderService : IGmailReaderService
             }
         }
 
-        return attachments;
+        return documents;
+    }
+
+    private async Task<List<LinkedDocument>> DownloadLinkedDocumentsAsync(List<string> urls)
+    {
+        var documents = new List<LinkedDocument>();
+        using var httpClient = new HttpClient();
+        httpClient.Timeout = TimeSpan.FromSeconds(30);
+
+        foreach (var url in urls)
+        {
+            try
+            {
+                var response = await httpClient.GetAsync(url);
+                response.EnsureSuccessStatusCode();
+
+                var contentType = response.Content.Headers.ContentType?.MediaType ?? "";
+                var fileName = GetFileNameFromResponse(response, url);
+
+                if (contentType == "application/pdf" || fileName.EndsWith(".pdf", StringComparison.OrdinalIgnoreCase))
+                {
+                    var pdfBytes = await response.Content.ReadAsByteArrayAsync();
+                    var extractedText = _pdfExtractor.ExtractText(pdfBytes, fileName);
+
+                    documents.Add(new LinkedDocument
+                    {
+                        Title = fileName,
+                        Url = url,
+                        Source = LinkedDocumentSource.BodyLink,
+                        ExtractedText = extractedText
+                    });
+
+                    _logger.LogInformation("Downloaded and extracted linked PDF: {FileName} ({Length} chars)",
+                        fileName, extractedText.Length);
+                }
+                else
+                {
+                    // Non-PDF link — keep the URL but no extracted text
+                    documents.Add(new LinkedDocument
+                    {
+                        Title = fileName,
+                        Url = url,
+                        Source = LinkedDocumentSource.BodyLink
+                    });
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Failed to download linked document: {Url}", url);
+                documents.Add(new LinkedDocument
+                {
+                    Title = GetFileNameFromUrl(url),
+                    Url = url,
+                    Source = LinkedDocumentSource.BodyLink
+                });
+            }
+        }
+
+        return documents;
+    }
+
+    private static string GetFileNameFromResponse(HttpResponseMessage response, string url)
+    {
+        var disposition = response.Content.Headers.ContentDisposition;
+        if (disposition?.FileName is not null)
+            return disposition.FileName.Trim('"');
+
+        return GetFileNameFromUrl(url);
+    }
+
+    private static string GetFileNameFromUrl(string url)
+    {
+        try
+        {
+            var uri = new Uri(url);
+            var path = uri.AbsolutePath;
+            var lastSegment = path.Split('/').LastOrDefault(s => !string.IsNullOrEmpty(s)) ?? "document";
+            return Uri.UnescapeDataString(lastSegment);
+        }
+        catch
+        {
+            return "document";
+        }
     }
 
     private static string? ExtractRawHtml(MessagePart payload)

@@ -8,12 +8,19 @@ public class SchoolEmail
     public required string SenderEmail { get; set; }
     public required DateTimeOffset ReceivedDate { get; set; }
     public required string Body { get; set; }
-    public List<PdfAttachment> PdfAttachments { get; set; } = [];
-    public List<string> Links { get; set; } = [];
+    public List<LinkedDocument> Documents { get; set; } = [];
 }
 
-public class PdfAttachment
+public class LinkedDocument
 {
-    public required string FileName { get; set; }
-    public required string ExtractedText { get; set; }
+    public required string Title { get; set; }
+    public required string Url { get; set; }
+    public required LinkedDocumentSource Source { get; set; }
+    public string? ExtractedText { get; set; }
+}
+
+public enum LinkedDocumentSource
+{
+    EmailAttachment,
+    BodyLink
 }

@@ -108,7 +108,7 @@ async Task TestFullPipeline()
         Console.WriteLine($"── Processing: {email.Subject} ──");
         Console.WriteLine($"   From: {email.SenderName}");
         Console.WriteLine($"   Date: {email.ReceivedDate}");
-        Console.WriteLine($"   PDFs: {email.PdfAttachments.Count}");
+        Console.WriteLine($"   Docs: {email.Documents.Count}");
 
         Console.WriteLine();
         Console.WriteLine("── Summarizing with Claude... ──");
@@ -171,10 +171,11 @@ async Task TestGmail()
         Console.WriteLine($"  From:    {email.SenderName}");
         Console.WriteLine($"  Date:    {email.ReceivedDate}");
         Console.WriteLine($"  Body:    {email.Body[..Math.Min(200, email.Body.Length)]}...");
-        Console.WriteLine($"  PDFs:    {email.PdfAttachments.Count}");
-        foreach (var pdf in email.PdfAttachments)
+        Console.WriteLine($"  Docs:    {email.Documents.Count}");
+        foreach (var doc in email.Documents)
         {
-            Console.WriteLine($"           - {pdf.FileName} ({pdf.ExtractedText.Length} chars)");
+            var textLen = doc.ExtractedText?.Length ?? 0;
+            Console.WriteLine($"           - [{doc.Source}] {doc.Title} ({textLen} chars)");
         }
     }
 }

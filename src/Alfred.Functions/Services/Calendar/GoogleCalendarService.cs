@@ -78,10 +78,19 @@ public class GoogleCalendarService : ICalendarService
 
     private async Task CreateEventAsync(CalendarService calendarService, CalendarEventInfo eventInfo, string emailId)
     {
+        // Check state table first
         var existing = await _stateService.GetCalendarEventMappingAsync(eventInfo.SubjectHash!);
         if (existing is not null)
         {
-            _logger.LogInformation("Calendar event already exists for {Title}, skipping create", eventInfo.Title);
+            _logger.LogInformation("Calendar event already exists in state for {Title}, skipping", eventInfo.Title);
+            return;
+        }
+
+        // Check Google Calendar directly for duplicates on the same date
+        if (await HasExistingCalendarEventAsync(calendarService, eventInfo))
+        {
+            _logger.LogInformation("Similar calendar event already exists on {Date} for {Title}, skipping",
+                eventInfo.Date, eventInfo.Title);
             return;
         }
 
@@ -95,6 +104,36 @@ public class GoogleCalendarService : ICalendarService
             new DateTimeOffset(eventInfo.Date));
 
         _logger.LogInformation("Created calendar event: {Title} on {Date}", eventInfo.Title, eventInfo.Date);
+    }
+
+    private async Task<bool> HasExistingCalendarEventAsync(CalendarService calendarService, CalendarEventInfo eventInfo)
+    {
+        var request = calendarService.Events.List(_alfredOptions.SharedCalendarId);
+        request.TimeMinDateTimeOffset = new DateTimeOffset(eventInfo.Date);
+        request.TimeMaxDateTimeOffset = new DateTimeOffset(eventInfo.Date.AddDays(1));
+        request.SingleEvents = true;
+        request.MaxResults = 50;
+
+        var response = await request.ExecuteAsync();
+        if (response.Items is null) return false;
+
+        // Check if any existing event has a similar title
+        var newTitle = NormalizeForComparison(eventInfo.Title);
+        return response.Items.Any(e =>
+        {
+            var existingTitle = NormalizeForComparison(e.Summary ?? "");
+            return existingTitle.Contains(newTitle) || newTitle.Contains(existingTitle);
+        });
+    }
+
+    private static string NormalizeForComparison(string text)
+    {
+        return text
+            .ToLowerInvariant()
+            .Replace("year 1", "").Replace("year 2", "").Replace("year 3", "")
+            .Replace("(year 1)", "").Replace("(year 2)", "").Replace("(year 3)", "")
+            .Replace("-", " ").Replace(":", " ")
+            .Trim();
     }
 
     private async Task UpdateEventAsync(CalendarService calendarService, CalendarEventInfo eventInfo, string emailId)

@@ -19,23 +19,26 @@ public class ClaudeSummarizerService : ISummarizerService
     {
         var client = CreateClient();
 
-        var attachmentContent = email.PdfAttachments.Count > 0
-            ? "\n\nPDF Attachment Content:\n" + string.Join("\n---\n",
-                email.PdfAttachments.Select(a => $"[{a.FileName}]\n{a.ExtractedText}"))
-            : "";
-
         var today = DateTime.Now.ToString("dddd, d MMMM yyyy");
 
-        var linksContent = email.Links.Count > 0
-            ? "\n\nLinks found in email:\n" + string.Join("\n", email.Links)
+        var docsWithContent = email.Documents.Where(d => !string.IsNullOrEmpty(d.ExtractedText)).ToList();
+        var documentContent = docsWithContent.Count > 0
+            ? "\n\nDocument Contents (read from attachments and linked files):\n" + string.Join("\n---\n",
+                docsWithContent.Select(d => $"[{d.Title}]\n{d.ExtractedText}"))
             : "";
 
-        var prompt = BuildSummarizePrompt(email, today, attachmentContent, linksContent);
+        var linksList = email.Documents.Where(d => d.Source == LinkedDocumentSource.BodyLink).ToList();
+        var linksContent = linksList.Count > 0
+            ? "\n\nLinks found in email:\n" + string.Join("\n",
+                linksList.Select(d => $"- {d.Title}: {d.Url}"))
+            : "";
+
+        var prompt = BuildSummarizePrompt(email, today, documentContent, linksContent);
 
         var parameters = new MessageParameters
         {
             Model = Anthropic.SDK.Constants.AnthropicModels.Claude45Sonnet,
-            MaxTokens = 1024,
+            MaxTokens = 8192,
             Messages = [new Message(RoleType.User, prompt)]
         };
 
@@ -95,7 +98,7 @@ public class ClaudeSummarizerService : ISummarizerService
         return new AnthropicClient(apiKey);
     }
 
-    private static string BuildSummarizePrompt(SchoolEmail email, string today, string attachmentContent, string linksContent)
+    private static string BuildSummarizePrompt(SchoolEmail email, string today, string documentContent, string linksContent)
     {
         return $"""
             You are Alfred, a personal assistant helping parents stay on top of their children's school communications.
@@ -106,12 +109,20 @@ public class ClaudeSummarizerService : ISummarizerService
             relative to the EMAIL SEND DATE ({email.ReceivedDate:yyyy-MM-dd}), NOT relative to today.
             For example, if the email was sent on Monday 20 April and says "tomorrow", that means Tuesday 21 April.
 
-            Analyze this school email and produce a JSON response with two fields:
+            Analyze this school email AND all attached/linked document contents below. Extract everything
+            a parent needs to know, especially:
+            - Things to bring or prepare (PE kit, lunch, toys, books, etc.)
+            - Changes from the regular schedule
+            - Forms to submit or deadlines to meet
+            - Homework assignments
+            - Upcoming events, outings, or meetings
+
+            Produce a JSON response with two fields:
 
             1. "telegramMessage": A concise Telegram message (MarkdownV2 format) that includes:
                - Email subject as the header with the envelope emoji (do NOT include school name or sender)
-               - 2-3 sentence summary
-               - Action items (things parents need to do/bring/sign) with the lightning emoji header
+               - 2-3 sentence summary covering the email AND document contents
+               - Action items (things parents need to do/bring/sign) with the lightning emoji header — include items found in documents, not just the email body
                - Any calendar events created with the calendar emoji
                - If there are links, add a "Links:" section at the end. Always give each link a short descriptive title based on context (e.g. "English Circular", "Weekly Plan PDF", "Registration Form"). Use MarkdownV2 inline link format: [Title](url). Never show raw long URLs.
 
@@ -134,7 +145,7 @@ public class ClaudeSummarizerService : ISummarizerService
 
             Email Body:
             {email.Body}
-            {attachmentContent}
+            {documentContent}
             {linksContent}
 
             Respond with valid JSON only, no markdown code fences.
@@ -224,11 +235,50 @@ public class ClaudeSummarizerService : ISummarizerService
         }
         catch (JsonException)
         {
+            // JSON may be truncated — try to extract telegramMessage via string search
+            var message = ExtractTelegramMessageFromBrokenJson(json);
             return new EmailDigest
             {
-                TelegramMessage = json,
+                TelegramMessage = message,
                 CalendarEvents = []
             };
         }
+    }
+
+    private static string ExtractTelegramMessageFromBrokenJson(string json)
+    {
+        // Try to find the telegramMessage value even in truncated JSON
+        const string key = "\"telegramMessage\":";
+        var startIndex = json.IndexOf(key, StringComparison.Ordinal);
+        if (startIndex < 0)
+            return "Alfred could not parse this email summary. Please check Gmail directly.";
+
+        startIndex += key.Length;
+
+        // Skip whitespace and opening quote
+        while (startIndex < json.Length && json[startIndex] is ' ' or '\n' or '\r' or '"')
+            startIndex++;
+
+        // Find the closing of the telegramMessage value
+        // Look for the pattern  ",\n  "calendarEvents" which marks the end
+        const string endMarker = "\"calendarEvents\"";
+        var endIndex = json.IndexOf(endMarker, startIndex, StringComparison.Ordinal);
+
+        string rawMessage;
+        if (endIndex > 0)
+        {
+            // Back up past the comma and whitespace
+            rawMessage = json[startIndex..endIndex].TrimEnd(' ', '\n', '\r', ',', '"');
+        }
+        else
+        {
+            // No end marker — take everything after the key, strip trailing junk
+            rawMessage = json[startIndex..].TrimEnd(' ', '\n', '\r', '"', ',', '}');
+        }
+
+        // Unescape JSON string escapes
+        rawMessage = rawMessage.Replace("\\n", "\n").Replace("\\\"", "\"").Replace("\\\\", "\\");
+
+        return rawMessage;
     }
 }

@@ -35,7 +35,7 @@ public class EveningDigestFunction
     }
 
     [Function("EveningDigest")]
-    public async Task Run([TimerTrigger("0 0 17 * * *")] TimerInfo timerInfo) // 5 PM UTC = 7 PM CEST
+    public async Task Run([TimerTrigger("0 0 14 * * *")] TimerInfo timerInfo) // 2 PM UTC = 4 PM CEST
     {
         _logger.LogInformation("EveningDigest triggered at {Time}", DateTime.UtcNow);
 
