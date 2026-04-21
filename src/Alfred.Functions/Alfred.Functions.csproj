@@ -21,7 +21,7 @@
     <PackageReference Include="Google.Apis.Auth" Version="1.69.0" />
 
     <!-- AI -->
-    <PackageReference Include="Anthropic" Version="1.0.0" />
+    <PackageReference Include="Anthropic.SDK" Version="5.10.0" />
 
     <!-- PDF -->
     <PackageReference Include="PdfPig" Version="0.1.14" />
