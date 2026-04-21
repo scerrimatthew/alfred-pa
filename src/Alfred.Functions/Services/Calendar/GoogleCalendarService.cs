@@ -143,20 +143,19 @@ public class GoogleCalendarService : ICalendarService
         {
             Summary = eventInfo.Title,
             Description = eventInfo.Description,
-            Reminders = new Event.RemindersData
-            {
-                UseDefault = false,
-                Overrides =
-                [
-                    new EventReminder { Method = "popup", Minutes = 24 * 60 } // 1 day before
-                ]
-            }
         };
 
         if (eventInfo.IsAllDay)
         {
             calendarEvent.Start = new EventDateTime { Date = eventInfo.Date.ToString("yyyy-MM-dd") };
             calendarEvent.End = new EventDateTime { Date = eventInfo.Date.AddDays(1).ToString("yyyy-MM-dd") };
+
+            // All-day events start at midnight — reminder at 6 PM day before = 6 hours before
+            calendarEvent.Reminders = new Event.RemindersData
+            {
+                UseDefault = false,
+                Overrides = [new EventReminder { Method = "popup", Minutes = 6 * 60 }]
+            };
         }
         else
         {
@@ -165,13 +164,23 @@ public class GoogleCalendarService : ICalendarService
 
             calendarEvent.Start = new EventDateTime
             {
-                DateTimeDateTimeOffset = new DateTimeOffset(startDt, TimeSpan.FromHours(2)), // CET/CEST
+                DateTimeDateTimeOffset = new DateTimeOffset(startDt, TimeSpan.FromHours(1)), // GMT+1
                 TimeZone = "Europe/Malta"
             };
             calendarEvent.End = new EventDateTime
             {
-                DateTimeDateTimeOffset = new DateTimeOffset(endDt, TimeSpan.FromHours(2)),
+                DateTimeDateTimeOffset = new DateTimeOffset(endDt, TimeSpan.FromHours(1)),
                 TimeZone = "Europe/Malta"
+            };
+
+            // Timed event — reminder at 6 PM (18:00) GMT+1 the day before
+            var reminderTime = eventInfo.Date.AddDays(-1).AddHours(18);
+            var minutesBefore = (int)(startDt - reminderTime).TotalMinutes;
+            if (minutesBefore < 0) minutesBefore = 6 * 60; // fallback
+            calendarEvent.Reminders = new Event.RemindersData
+            {
+                UseDefault = false,
+                Overrides = [new EventReminder { Method = "popup", Minutes = minutesBefore }]
             };
         }
 

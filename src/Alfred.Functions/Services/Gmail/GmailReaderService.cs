@@ -94,6 +94,8 @@ public partial class GmailReaderService : IGmailReaderService
                 ? DateTimeOffset.TryParse(dateHeader, out var parsed) ? parsed : DateTimeOffset.UtcNow
                 : DateTimeOffset.UtcNow;
 
+            var rawHtml = ExtractRawHtml(message.Payload);
+            var links = rawHtml is not null ? ExtractLinks(rawHtml) : [];
             var body = ExtractBody(message.Payload);
             var pdfAttachments = await ExtractPdfAttachmentsAsync(gmailService, message);
 
@@ -105,7 +107,8 @@ public partial class GmailReaderService : IGmailReaderService
                 SenderEmail = ExtractEmail(from),
                 ReceivedDate = receivedDate,
                 Body = body,
-                PdfAttachments = pdfAttachments
+                PdfAttachments = pdfAttachments,
+                Links = links
             };
         }
         catch (Exception ex)
@@ -195,6 +198,34 @@ public partial class GmailReaderService : IGmailReaderService
         }
 
         return attachments;
+    }
+
+    private static string? ExtractRawHtml(MessagePart payload)
+    {
+        var htmlPart = FindPartByMimeType(payload, "text/html");
+        if (htmlPart is not null)
+            return DecodeBase64(htmlPart.Body.Data);
+        return null;
+    }
+
+    private static List<string> ExtractLinks(string html)
+    {
+        var links = new List<string>();
+        foreach (var match in HrefRegex().Matches(html).Cast<Match>())
+        {
+            var url = match.Groups[1].Value.Trim();
+            // Skip mailto, tel, javascript, school management portal, and school Facebook
+            if (url.StartsWith("http", StringComparison.OrdinalIgnoreCase) &&
+                !url.Contains("myschoolmanagement.com") &&
+                !url.Contains("facebook.com/SacredHeart") &&
+                !url.Contains("facebook.com%2FSacredHeart") &&
+                !url.Contains("sacredheartcollege.msm.io%2Fannouncements"))
+            {
+                if (!links.Contains(url))
+                    links.Add(url);
+            }
+        }
+        return links;
     }
 
     private static IEnumerable<MessagePart> GetAllParts(MessagePart part)
@@ -310,4 +341,7 @@ public partial class GmailReaderService : IGmailReaderService
 
     [GeneratedRegex(@"[ \t]{2,}")]
     private static partial Regex MultipleSpacesRegex();
+
+    [GeneratedRegex(@"href\s*=\s*[""']([^""']+)[""']", RegexOptions.IgnoreCase)]
+    private static partial Regex HrefRegex();
 }

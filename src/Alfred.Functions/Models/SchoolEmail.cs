@@ -9,6 +9,7 @@ public class SchoolEmail
     public required DateTimeOffset ReceivedDate { get; set; }
     public required string Body { get; set; }
     public List<PdfAttachment> PdfAttachments { get; set; } = [];
+    public List<string> Links { get; set; } = [];
 }
 
 public class PdfAttachment

@@ -26,7 +26,11 @@ public class ClaudeSummarizerService : ISummarizerService
 
         var today = DateTime.Now.ToString("dddd, d MMMM yyyy");
 
-        var prompt = BuildSummarizePrompt(email, today, attachmentContent);
+        var linksContent = email.Links.Count > 0
+            ? "\n\nLinks found in email:\n" + string.Join("\n", email.Links)
+            : "";
+
+        var prompt = BuildSummarizePrompt(email, today, attachmentContent, linksContent);
 
         var parameters = new MessageParameters
         {
@@ -91,7 +95,7 @@ public class ClaudeSummarizerService : ISummarizerService
         return new AnthropicClient(apiKey);
     }
 
-    private static string BuildSummarizePrompt(SchoolEmail email, string today, string attachmentContent)
+    private static string BuildSummarizePrompt(SchoolEmail email, string today, string attachmentContent, string linksContent)
     {
         return $"""
             You are Alfred, a personal assistant helping parents stay on top of their children's school communications.
@@ -100,12 +104,11 @@ public class ClaudeSummarizerService : ISummarizerService
             Analyze this school email and produce a JSON response with two fields:
 
             1. "telegramMessage": A concise Telegram message (MarkdownV2 format) that includes:
-               - School name header with the school emoji
-               - Email subject with the envelope emoji
-               - Sender name
+               - Email subject as the header with the envelope emoji (do NOT include school name or sender)
                - 2-3 sentence summary
                - Action items (things parents need to do/bring/sign) with the lightning emoji header
                - Any calendar events created with the calendar emoji
+               - If there are links, add a "Links:" section at the end with each link on its own line
 
             2. "calendarEvents": An array of events to add to the calendar, each with:
                - "title": event name
@@ -127,6 +130,7 @@ public class ClaudeSummarizerService : ISummarizerService
             Email Body:
             {email.Body}
             {attachmentContent}
+            {linksContent}
 
             Respond with valid JSON only, no markdown code fences.
             """;

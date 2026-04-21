@@ -35,7 +35,8 @@ var alfredOptions = Options.Create(new AlfredOptions
     SchoolEmailSender = GetSetting("Alfred:SchoolEmailSender"),
     SharedCalendarId = GetSetting("Alfred:SharedCalendarId"),
     TelegramChatId = GetSetting("Alfred:TelegramChatId"),
-    LookbackHours = int.TryParse(GetSetting("Alfred:LookbackHours"), out var lh) ? lh : 25,
+    LookbackHours = args.Length > 0 && int.TryParse(args[0], out var lhArg) ? lhArg
+        : int.TryParse(GetSetting("Alfred:LookbackHours"), out var lh) ? lh : 25,
     SchoolDaysAhead = int.TryParse(GetSetting("Alfred:SchoolDaysAhead"), out var sd) ? sd : 5
 });
 
