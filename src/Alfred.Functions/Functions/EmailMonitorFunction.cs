@@ -61,7 +61,7 @@ public class EmailMonitorFunction
                     await _notificationService.SendAlertAsync(digest.TelegramMessage);
 
                     await _stateService.MarkEmailProcessedAsync(
-                        email.MessageId, email.Subject, email.SenderName, digest.TelegramMessage);
+                        email.MessageId, email.Subject, email.SenderName, digest.TelegramMessage, digest.Homework);
 
                     _logger.LogInformation("Successfully processed email: {Subject}", email.Subject);
                 }

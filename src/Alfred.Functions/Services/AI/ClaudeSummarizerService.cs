@@ -73,7 +73,15 @@ public class ClaudeSummarizerService : ISummarizerService
             }))
             : "No upcoming events.";
 
-        var prompt = BuildDigestPrompt(todayStr, emailSummaries, eventsList);
+        var homeworkItems = recentEmails
+            .Where(e => !string.IsNullOrWhiteSpace(e.Homework))
+            .Select(e => $"- {e.Homework}")
+            .ToList();
+        var homeworkSummary = homeworkItems.Count > 0
+            ? string.Join("\n", homeworkItems)
+            : "No homework assignments.";
+
+        var prompt = BuildDigestPrompt(todayStr, emailSummaries, eventsList, homeworkSummary);
 
         var parameters = new MessageParameters
         {
@@ -109,6 +117,10 @@ public class ClaudeSummarizerService : ISummarizerService
             relative to the EMAIL SEND DATE ({email.ReceivedDate:yyyy-MM-dd}), NOT relative to today.
             For example, if the email was sent on Monday 20 April and says "tomorrow", that means Tuesday 21 April.
 
+            CRITICAL: For weekly plans that say "week starting DD/MM", use that date as Monday and calculate
+            all other days from it. For example, "week starting 20/4/2026" means Monday=20 April, Tuesday=21 April,
+            Wednesday=22 April, Thursday=23 April, Friday=24 April. Always verify day-date alignment before outputting.
+
             IMPORTANT CONTEXT:
             - Valentina is in Year 1. Only include information relevant to Year 1 (or whole-school events). Ignore Year 2+ specific content unless it will apply when she moves up.
             - Do NOT create calendar events for optional programmes that require signing up first (e.g. summer programmes, extracurricular clubs). Mention them in the summary but not in calendarEvents.
@@ -124,7 +136,7 @@ public class ClaudeSummarizerService : ISummarizerService
             - Homework assignments
             - Upcoming events, outings, or meetings
 
-            Produce a JSON response with two fields:
+            Produce a JSON response with three fields:
 
             1. "telegramMessage": Format using Telegram HTML. Follow this template exactly:
 
@@ -138,6 +150,10 @@ public class ClaudeSummarizerService : ISummarizerService
 
                • Item one
                • Item two
+
+               📝 <b>HOMEWORK</b>
+
+               • Subject — Description and due date
 
                📅 <b>CALENDAR</b>
 
@@ -154,6 +170,7 @@ public class ClaudeSummarizerService : ISummarizerService
                - Add the ━━━━━━━━━━━━━━━ separator line only once, right after the summary paragraph
                - Summary: plain text paragraph, no bullets
                - "WHAT TO PREPARE" only if there are actionable items for parents
+               - "HOMEWORK" only if homework is mentioned. Include subject, description, and due date
                - "CALENDAR" only if calendar events were created
                - "LINKS" only if there are links. Give each a short descriptive title. Use <a href="url">Title</a> format.
                - Use • (bullet character) for list items, — (em dash) to separate event names from dates
@@ -176,6 +193,10 @@ public class ClaudeSummarizerService : ISummarizerService
                - "endTime": HH:mm or null for all-day events
                - "action": "create", "update", or "delete"
 
+            3. "homework": A plain text string summarizing any homework assignments mentioned in the email.
+               Include the subject, what needs to be done, and the due date if given.
+               Set to null if no homework is mentioned.
+
             Important formatting rules:
             - Use Telegram HTML format, NOT MarkdownV2
             - Only allowed tags: <b>bold</b> and <a href="url">link</a>
@@ -195,7 +216,7 @@ public class ClaudeSummarizerService : ISummarizerService
             """;
     }
 
-    private static string BuildDigestPrompt(string todayStr, string emailSummaries, string eventsList)
+    private static string BuildDigestPrompt(string todayStr, string emailSummaries, string eventsList, string homeworkSummary)
     {
         return $"""
             You are Alfred, a personal assistant for the parents of Valentina, a Year 1 student at Sacred Heart College Junior School (moving to Year 2 in September/October 2026). Build an evening digest.
@@ -213,6 +234,9 @@ public class ClaudeSummarizerService : ISummarizerService
 
             ⏰ <b>TOMORROW</b>
             What's happening tomorrow, highlight what to prepare
+
+            📝 <b>HOMEWORK</b>
+            Current homework assignments and due dates
 
             📅 <b>COMING UP</b>
             Upcoming weekday events (skip weekends), up to 5 school days
@@ -234,6 +258,9 @@ public class ClaudeSummarizerService : ISummarizerService
 
             Upcoming calendar events (next 5 school days):
             {eventsList}
+
+            Homework assignments from recent emails:
+            {homeworkSummary}
 
             Respond with the formatted HTML message only.
             """;
@@ -259,6 +286,10 @@ public class ClaudeSummarizerService : ISummarizerService
             var root = doc.RootElement;
 
             var telegramMessage = root.GetProperty("telegramMessage").GetString() ?? "";
+
+            var homework = root.TryGetProperty("homework", out var hwProp) && hwProp.ValueKind != JsonValueKind.Null
+                ? hwProp.GetString()
+                : null;
 
             var calendarEvents = new List<CalendarEventInfo>();
             if (root.TryGetProperty("calendarEvents", out var eventsArray))
@@ -290,7 +321,8 @@ public class ClaudeSummarizerService : ISummarizerService
             return new EmailDigest
             {
                 TelegramMessage = telegramMessage,
-                CalendarEvents = calendarEvents
+                CalendarEvents = calendarEvents,
+                Homework = homework
             };
         }
         catch (JsonException)

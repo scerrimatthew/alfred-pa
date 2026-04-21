@@ -35,7 +35,7 @@ public class TableStorageStateService : IStateService
         }
     }
 
-    public async Task MarkEmailProcessedAsync(string messageId, string subject, string senderName, string summary)
+    public async Task MarkEmailProcessedAsync(string messageId, string subject, string senderName, string summary, string? homework = null)
     {
         var tableClient = _tableServiceClient.GetTableClient(ProcessedEmailsTable);
         await tableClient.CreateIfNotExistsAsync();
@@ -46,6 +46,7 @@ public class TableStorageStateService : IStateService
             Subject = subject,
             SenderName = senderName,
             Summary = summary,
+            Homework = homework,
             ProcessedAt = DateTimeOffset.UtcNow
         };
 

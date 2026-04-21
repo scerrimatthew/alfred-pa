@@ -11,7 +11,7 @@ public class InMemoryStateService : IStateService
     public Task<bool> IsEmailProcessedAsync(string messageId) =>
         Task.FromResult(_emails.ContainsKey(messageId));
 
-    public Task MarkEmailProcessedAsync(string messageId, string subject, string senderName, string summary)
+    public Task MarkEmailProcessedAsync(string messageId, string subject, string senderName, string summary, string? homework = null)
     {
         _emails[messageId] = new ProcessedEmailEntity
         {
@@ -19,6 +19,7 @@ public class InMemoryStateService : IStateService
             Subject = subject,
             SenderName = senderName,
             Summary = summary,
+            Homework = homework,
             ProcessedAt = DateTimeOffset.UtcNow
         };
         Console.WriteLine($"  [State] Marked as processed: {subject}");

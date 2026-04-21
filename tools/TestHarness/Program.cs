@@ -60,35 +60,42 @@ var calendarService = new GoogleCalendarService(alfredOptions, googleOptions, st
 var telegram = new TelegramNotificationService(loggerFactory.CreateLogger<TelegramNotificationService>());
 
 // ── Menu ──
-Console.WriteLine("=== Alfred Test Harness ===");
-Console.WriteLine();
-Console.WriteLine("1. Test full EmailMonitor pipeline (fetch → summarize → calendar → Telegram)");
-Console.WriteLine("2. Test Telegram only (send a test message)");
-Console.WriteLine("3. Test Gmail only (fetch and list school emails)");
-Console.WriteLine("4. Test Evening Digest (calendar events → Claude digest → Telegram)");
-Console.WriteLine("5. Exit");
-Console.WriteLine();
-Console.Write("Choose: ");
-
-var choice = Console.ReadLine()?.Trim();
-
-switch (choice)
+while (true)
 {
-    case "1":
-        await TestFullPipeline();
-        break;
-    case "2":
-        await TestTelegram();
-        break;
-    case "3":
-        await TestGmail();
-        break;
-    case "4":
-        await TestEveningDigest();
-        break;
-    default:
-        Console.WriteLine("Bye!");
-        break;
+    Console.WriteLine();
+    Console.WriteLine("=== Alfred Test Harness ===");
+    Console.WriteLine();
+    Console.WriteLine("1. Test full EmailMonitor pipeline (fetch → summarize → calendar → Telegram)");
+    Console.WriteLine("2. Test Telegram only (send a test message)");
+    Console.WriteLine("3. Test Gmail only (fetch and list school emails)");
+    Console.WriteLine("4. Test Evening Digest (calendar events → Claude digest → Telegram)");
+    Console.WriteLine("5. Exit");
+    Console.WriteLine();
+    Console.Write("Choose: ");
+
+    var choice = Console.ReadLine()?.Trim();
+
+    switch (choice)
+    {
+        case "1":
+            await TestFullPipeline();
+            break;
+        case "2":
+            await TestTelegram();
+            break;
+        case "3":
+            await TestGmail();
+            break;
+        case "4":
+            await TestEveningDigest();
+            break;
+        case "5":
+            Console.WriteLine("Bye!");
+            return;
+        default:
+            Console.WriteLine("Bye!");
+            return;
+    }
 }
 
 async Task TestFullPipeline()
@@ -141,7 +148,7 @@ async Task TestFullPipeline()
             await telegram.SendAlertAsync(digest.TelegramMessage);
 
             await stateService.MarkEmailProcessedAsync(
-                email.MessageId, email.Subject, email.SenderName, digest.TelegramMessage);
+                email.MessageId, email.Subject, email.SenderName, digest.TelegramMessage, digest.Homework);
 
             Console.WriteLine("Done!");
         }
