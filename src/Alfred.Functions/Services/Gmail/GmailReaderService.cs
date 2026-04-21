@@ -229,9 +229,31 @@ public partial class GmailReaderService : IGmailReaderService
 
     private static string StripHtml(string html)
     {
-        var text = HtmlTagRegex().Replace(html, " ");
-        text = HtmlEntityRegex().Replace(text, " ");
+        // Remove style and script blocks entirely
+        var text = StyleScriptRegex().Replace(html, "");
+        // Convert block elements to newlines
+        text = BlockTagRegex().Replace(text, "\n");
+        // Convert <br> to newlines
+        text = BrTagRegex().Replace(text, "\n");
+        // Convert list items to bullet points
+        text = LiTagRegex().Replace(text, "\n• ");
+        // Strip remaining tags
+        text = HtmlTagRegex().Replace(text, "");
+        // Decode common HTML entities
+        text = text.Replace("&nbsp;", " ")
+                   .Replace("&amp;", "&")
+                   .Replace("&lt;", "<")
+                   .Replace("&gt;", ">")
+                   .Replace("&quot;", "\"")
+                   .Replace("&#39;", "'");
+        // Clean up remaining entities
+        text = HtmlEntityRegex().Replace(text, "");
+        // Collapse multiple blank lines
+        text = MultipleNewlinesRegex().Replace(text, "\n\n");
+        // Collapse multiple spaces on same line
         text = MultipleSpacesRegex().Replace(text, " ");
+        // Trim each line
+        text = string.Join("\n", text.Split('\n').Select(l => l.Trim()));
         return text.Trim();
     }
 
@@ -265,12 +287,27 @@ public partial class GmailReaderService : IGmailReaderService
     [GeneratedRegex(@"<(.+?)>")]
     private static partial Regex EmailRegex();
 
+    [GeneratedRegex(@"<style[^>]*>.*?</style>", RegexOptions.Singleline | RegexOptions.IgnoreCase)]
+    private static partial Regex StyleScriptRegex();
+
+    [GeneratedRegex(@"</(p|div|h[1-6]|tr|table)>", RegexOptions.IgnoreCase)]
+    private static partial Regex BlockTagRegex();
+
+    [GeneratedRegex(@"<br\s*/?>", RegexOptions.IgnoreCase)]
+    private static partial Regex BrTagRegex();
+
+    [GeneratedRegex(@"<li[^>]*>", RegexOptions.IgnoreCase)]
+    private static partial Regex LiTagRegex();
+
     [GeneratedRegex(@"<[^>]+>")]
     private static partial Regex HtmlTagRegex();
 
     [GeneratedRegex(@"&\w+;")]
     private static partial Regex HtmlEntityRegex();
 
-    [GeneratedRegex(@"\s{2,}")]
+    [GeneratedRegex(@"\n{3,}")]
+    private static partial Regex MultipleNewlinesRegex();
+
+    [GeneratedRegex(@"[ \t]{2,}")]
     private static partial Regex MultipleSpacesRegex();
 }

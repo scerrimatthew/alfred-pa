@@ -1,0 +1,179 @@
+using Alfred.Functions.Configuration;
+using Alfred.Functions.Services.AI;
+using Alfred.Functions.Services.Calendar;
+using Alfred.Functions.Services.Gmail;
+using Alfred.Functions.Services.Notifications;
+using Alfred.Functions.Services.Pdf;
+using Alfred.Functions.Services.State;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
+using TestHarness;
+
+// ── Load settings from local.settings.json ──
+var settingsPath = Path.GetFullPath(
+    Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..",
+        "src", "Alfred.Functions", "local.settings.json"));
+
+if (!File.Exists(settingsPath))
+{
+    Console.WriteLine($"local.settings.json not found at: {settingsPath}");
+    return;
+}
+
+var json = System.Text.Json.JsonDocument.Parse(File.ReadAllText(settingsPath));
+var values = json.RootElement.GetProperty("Values");
+
+string GetSetting(string key) => values.TryGetProperty(key, out var val) ? val.GetString() ?? "" : "";
+
+// Set environment variables (used by services that read from env)
+Environment.SetEnvironmentVariable("Anthropic__ApiKey", GetSetting("Anthropic:ApiKey"));
+Environment.SetEnvironmentVariable("Telegram__BotToken", GetSetting("Telegram:BotToken"));
+Environment.SetEnvironmentVariable("Alfred__TelegramChatId", GetSetting("Alfred:TelegramChatId"));
+
+var alfredOptions = Options.Create(new AlfredOptions
+{
+    SchoolEmailSender = GetSetting("Alfred:SchoolEmailSender"),
+    SharedCalendarId = GetSetting("Alfred:SharedCalendarId"),
+    TelegramChatId = GetSetting("Alfred:TelegramChatId"),
+    LookbackHours = int.TryParse(GetSetting("Alfred:LookbackHours"), out var lh) ? lh : 25,
+    SchoolDaysAhead = int.TryParse(GetSetting("Alfred:SchoolDaysAhead"), out var sd) ? sd : 5
+});
+
+var googleOptions = Options.Create(new GoogleOptions
+{
+    ClientId = GetSetting("Google:ClientId"),
+    ClientSecret = GetSetting("Google:ClientSecret"),
+    RefreshToken = GetSetting("Google:RefreshToken")
+});
+
+// ── Set up services ──
+var loggerFactory = LoggerFactory.Create(b => b.AddConsole().SetMinimumLevel(LogLevel.Information));
+
+var stateService = new InMemoryStateService();
+var pdfExtractor = new PdfExtractorService(loggerFactory.CreateLogger<PdfExtractorService>());
+var gmailReader = new GmailReaderService(alfredOptions, googleOptions, stateService, pdfExtractor,
+    loggerFactory.CreateLogger<GmailReaderService>());
+var summarizer = new ClaudeSummarizerService(loggerFactory.CreateLogger<ClaudeSummarizerService>());
+var calendarService = new GoogleCalendarService(alfredOptions, googleOptions, stateService,
+    loggerFactory.CreateLogger<GoogleCalendarService>());
+var telegram = new TelegramNotificationService(loggerFactory.CreateLogger<TelegramNotificationService>());
+
+// ── Menu ──
+Console.WriteLine("=== Alfred Test Harness ===");
+Console.WriteLine();
+Console.WriteLine("1. Test full EmailMonitor pipeline (fetch → summarize → calendar → Telegram)");
+Console.WriteLine("2. Test Telegram only (send a test message)");
+Console.WriteLine("3. Test Gmail only (fetch and list school emails)");
+Console.WriteLine("4. Exit");
+Console.WriteLine();
+Console.Write("Choose: ");
+
+var choice = Console.ReadLine()?.Trim();
+
+switch (choice)
+{
+    case "1":
+        await TestFullPipeline();
+        break;
+    case "2":
+        await TestTelegram();
+        break;
+    case "3":
+        await TestGmail();
+        break;
+    default:
+        Console.WriteLine("Bye!");
+        break;
+}
+
+async Task TestFullPipeline()
+{
+    Console.WriteLine();
+    Console.WriteLine("── Fetching new school emails... ──");
+
+    var emails = await gmailReader.GetNewEmailsAsync();
+
+    if (emails.Count == 0)
+    {
+        Console.WriteLine("No new school emails found.");
+        return;
+    }
+
+    Console.WriteLine($"Found {emails.Count} new email(s).");
+
+    foreach (var email in emails)
+    {
+        Console.WriteLine();
+        Console.WriteLine($"── Processing: {email.Subject} ──");
+        Console.WriteLine($"   From: {email.SenderName}");
+        Console.WriteLine($"   Date: {email.ReceivedDate}");
+        Console.WriteLine($"   PDFs: {email.PdfAttachments.Count}");
+
+        Console.WriteLine();
+        Console.WriteLine("── Summarizing with Claude... ──");
+
+        var digest = await summarizer.SummarizeEmailAsync(email);
+
+        Console.WriteLine();
+        Console.WriteLine("── Telegram message preview: ──");
+        Console.WriteLine(digest.TelegramMessage);
+
+        Console.WriteLine();
+        Console.WriteLine($"── Calendar events to create: {digest.CalendarEvents.Count} ──");
+        foreach (var evt in digest.CalendarEvents)
+        {
+            Console.WriteLine($"   [{evt.Action}] {evt.Title} — {evt.Date:ddd d MMM yyyy}" +
+                (evt.IsAllDay ? " (all day)" : $" {evt.StartTime}-{evt.EndTime}"));
+        }
+
+        Console.Write("\nSend to Telegram and create calendar events? (y/n): ");
+        if (Console.ReadLine()?.Trim().ToLower() == "y")
+        {
+            Console.WriteLine("── Creating calendar events... ──");
+            await calendarService.ProcessEventsAsync(digest.CalendarEvents, email.MessageId);
+
+            Console.WriteLine("── Sending Telegram notification... ──");
+            await telegram.SendAlertAsync(digest.TelegramMessage);
+
+            await stateService.MarkEmailProcessedAsync(
+                email.MessageId, email.Subject, email.SenderName, digest.TelegramMessage);
+
+            Console.WriteLine("Done!");
+        }
+        else
+        {
+            Console.WriteLine("Skipped.");
+        }
+    }
+}
+
+async Task TestTelegram()
+{
+    Console.WriteLine();
+    Console.WriteLine("── Sending test message to Telegram... ──");
+    await telegram.SendAlertAsync("🏫 *Alfred — Test Message*\n\nAlfred is working\\! This is a test notification\\.");
+    Console.WriteLine("Sent! Check your Telegram group.");
+}
+
+async Task TestGmail()
+{
+    Console.WriteLine();
+    Console.WriteLine("── Fetching school emails... ──");
+
+    var emails = await gmailReader.GetNewEmailsAsync();
+
+    Console.WriteLine($"Found {emails.Count} email(s):");
+    foreach (var email in emails)
+    {
+        Console.WriteLine();
+        Console.WriteLine($"  Subject: {email.Subject}");
+        Console.WriteLine($"  From:    {email.SenderName}");
+        Console.WriteLine($"  Date:    {email.ReceivedDate}");
+        Console.WriteLine($"  Body:    {email.Body[..Math.Min(200, email.Body.Length)]}...");
+        Console.WriteLine($"  PDFs:    {email.PdfAttachments.Count}");
+        foreach (var pdf in email.PdfAttachments)
+        {
+            Console.WriteLine($"           - {pdf.FileName} ({pdf.ExtractedText.Length} chars)");
+        }
+    }
+}

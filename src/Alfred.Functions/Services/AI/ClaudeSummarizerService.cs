@@ -163,6 +163,18 @@ public class ClaudeSummarizerService : ISummarizerService
     {
         try
         {
+            // Strip markdown code fences if Claude wrapped the response
+            json = json.Trim();
+            if (json.StartsWith("```"))
+            {
+                var firstNewline = json.IndexOf('\n');
+                if (firstNewline > 0)
+                    json = json[(firstNewline + 1)..];
+                if (json.EndsWith("```"))
+                    json = json[..^3];
+                json = json.Trim();
+            }
+
             using var doc = JsonDocument.Parse(json);
             var root = doc.RootElement;
 
