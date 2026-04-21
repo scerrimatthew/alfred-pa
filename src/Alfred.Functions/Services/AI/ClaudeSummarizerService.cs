@@ -100,6 +100,11 @@ public class ClaudeSummarizerService : ISummarizerService
         return $"""
             You are Alfred, a personal assistant helping parents stay on top of their children's school communications.
             Today is {today}.
+            This email was sent on {email.ReceivedDate:dddd, d MMMM yyyy}.
+
+            CRITICAL: When the email says "tomorrow", "next week", "this Wednesday", etc., resolve those dates
+            relative to the EMAIL SEND DATE ({email.ReceivedDate:yyyy-MM-dd}), NOT relative to today.
+            For example, if the email was sent on Monday 20 April and says "tomorrow", that means Tuesday 21 April.
 
             Analyze this school email and produce a JSON response with two fields:
 
@@ -108,7 +113,7 @@ public class ClaudeSummarizerService : ISummarizerService
                - 2-3 sentence summary
                - Action items (things parents need to do/bring/sign) with the lightning emoji header
                - Any calendar events created with the calendar emoji
-               - If there are links, add a "Links:" section at the end with each link on its own line
+               - If there are links, add a "Links:" section at the end. Always give each link a short descriptive title based on context (e.g. "English Circular", "Weekly Plan PDF", "Registration Form"). Use MarkdownV2 inline link format: [Title](url). Never show raw long URLs.
 
             2. "calendarEvents": An array of events to add to the calendar, each with:
                - "title": event name
