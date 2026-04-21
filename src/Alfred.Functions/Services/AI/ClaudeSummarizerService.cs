@@ -98,6 +98,72 @@ public class ClaudeSummarizerService : ISummarizerService
         return responseText;
     }
 
+    public async Task<string> AnswerQuestionAsync(
+        string question,
+        List<ProcessedEmailEntity> recentEmails,
+        List<Google.Apis.Calendar.v3.Data.Event> upcomingEvents)
+    {
+        var client = CreateClient();
+
+        var today = DateTime.Now.ToString("dddd, d MMMM yyyy");
+
+        var emailSummaries = recentEmails.Count > 0
+            ? string.Join("\n", recentEmails.OrderByDescending(e => e.ProcessedAt).Select(e =>
+            {
+                var date = e.ProcessedAt.ToString("ddd d MMM yyyy");
+                var homework = !string.IsNullOrWhiteSpace(e.Homework) ? $" | Homework: {e.Homework}" : "";
+                return $"- [{date}] {e.Subject}: {e.Summary}{homework}";
+            }))
+            : "No recent emails.";
+
+        var eventsList = upcomingEvents.Count > 0
+            ? string.Join("\n", upcomingEvents.Select(e =>
+            {
+                var date = e.Start.DateTimeDateTimeOffset?.ToString("ddd d MMM yyyy HH:mm") ?? e.Start.Date ?? "TBD";
+                return $"- {date}: {e.Summary} — {e.Description}";
+            }))
+            : "No upcoming events.";
+
+        var prompt = $"""
+            You are Alfred, a helpful personal assistant for the parents of Valentina, a Year 1 student at Sacred Heart College Junior School (moving to Year 2 in September/October 2026).
+            Today is {today}. Only include information relevant to Year 1 or whole-school events.
+
+            Answer the question naturally and concisely. Do not mention where the information comes from,
+            do not reference "the data", emails, or calendar sources. Just answer as if you know it.
+            If you genuinely don't have the information, say you're not sure.
+
+            When relevant, include links to documents using <a href="url">title</a> format.
+
+            Format your reply using Telegram HTML:
+            - Use <b>bold</b> for emphasis
+            - Use • for bullet points
+            - Only use <b> and <a href=""> tags
+
+            ---
+            {emailSummaries}
+
+            {eventsList}
+            ---
+
+            Question: {question}
+            """;
+
+        var parameters = new MessageParameters
+        {
+            Model = Anthropic.SDK.Constants.AnthropicModels.Claude45Sonnet,
+            MaxTokens = 2048,
+            Messages = [new Message(RoleType.User, prompt)]
+        };
+
+        var response = await client.Messages.GetClaudeMessageAsync(parameters);
+
+        var responseText = response.Content?.OfType<TextContent>().FirstOrDefault()?.Text
+            ?? "Sorry, I couldn't generate an answer. Please try again.";
+
+        _logger.LogInformation("Answered question: {Length} chars", responseText.Length);
+        return responseText;
+    }
+
     private static AnthropicClient CreateClient()
     {
         var apiKey = Environment.GetEnvironmentVariable("Anthropic__ApiKey")

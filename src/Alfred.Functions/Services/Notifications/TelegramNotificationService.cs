@@ -38,6 +38,21 @@ public class TelegramNotificationService : INotificationService
         _logger.LogInformation("Sent Telegram error notification");
     }
 
+    public async Task SendMessageAsync(long chatId, string message)
+    {
+        var client = new TelegramBotClient(
+            Environment.GetEnvironmentVariable("Telegram__BotToken")
+                ?? throw new InvalidOperationException("Telegram bot token not configured"));
+
+        var chunks = SplitMessage(message);
+        foreach (var chunk in chunks)
+        {
+            await client.SendMessage(chatId, chunk, parseMode: ParseMode.Html, linkPreviewOptions: new Telegram.Bot.Types.LinkPreviewOptions { IsDisabled = true });
+        }
+
+        _logger.LogInformation("Sent Telegram reply to chat {ChatId} ({Chunks} chunk(s))", chatId, chunks.Count);
+    }
+
     private static (TelegramBotClient client, string chatId) GetClientAndChatId()
     {
         var botToken = Environment.GetEnvironmentVariable("Telegram__BotToken")

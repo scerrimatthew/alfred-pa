@@ -10,6 +10,9 @@ public class AlfredOptions
     public bool SendEmptyDigest { get; set; } = false;
     public int LookbackHours { get; set; } = 25;
     public int SchoolDaysAhead { get; set; } = 5;
+    public string TelegramWebhookSecret { get; set; } = string.Empty;
+    public int ChatLookbackDays { get; set; } = 30;
+    public string AllowedTelegramUserIds { get; set; } = string.Empty;
 }
 
 public class GoogleOptions

@@ -69,7 +69,8 @@ while (true)
     Console.WriteLine("2. Test Telegram only (send a test message)");
     Console.WriteLine("3. Test Gmail only (fetch and list school emails)");
     Console.WriteLine("4. Test Evening Digest (calendar events → Claude digest → Telegram)");
-    Console.WriteLine("5. Exit");
+    Console.WriteLine("5. Test Chat Q&A (ask Alfred a question)");
+    Console.WriteLine("6. Exit");
     Console.WriteLine();
     Console.Write("Choose: ");
 
@@ -90,6 +91,9 @@ while (true)
             await TestEveningDigest();
             break;
         case "5":
+            await TestChatQA();
+            break;
+        case "6":
             Console.WriteLine("Bye!");
             return;
         default:
@@ -215,6 +219,58 @@ async Task TestEveningDigest()
     if (Console.ReadLine()?.Trim().ToLower() == "y")
     {
         await telegram.SendAlertAsync(digestMessage);
+        Console.WriteLine("Sent!");
+    }
+    else
+    {
+        Console.WriteLine("Skipped.");
+    }
+}
+
+async Task TestChatQA()
+{
+    Console.WriteLine();
+
+    // Fetch context: recent emails from state + upcoming calendar events
+    var lookbackDays = 30;
+    var since = DateTimeOffset.UtcNow.AddDays(-lookbackDays);
+    var recentEmails = await stateService.GetEmailsSinceAsync(since);
+    Console.WriteLine($"── Context: {recentEmails.Count} email(s) in state (last {lookbackDays} days) ──");
+
+    var schoolDaysAhead = alfredOptions.Value.SchoolDaysAhead;
+    var upcomingEvents = await calendarService.GetUpcomingEventsAsync(schoolDaysAhead);
+    Console.WriteLine($"── Context: {upcomingEvents.Count} upcoming calendar event(s) ──");
+
+    if (recentEmails.Count == 0 && upcomingEvents.Count == 0)
+    {
+        Console.WriteLine();
+        Console.WriteLine("No context available. Run option 1 first to process emails,");
+        Console.WriteLine("or check that the shared calendar has upcoming events.");
+    }
+
+    Console.WriteLine();
+    Console.Write("Ask Alfred a question: ");
+    var question = Console.ReadLine()?.Trim();
+
+    if (string.IsNullOrWhiteSpace(question))
+    {
+        Console.WriteLine("No question entered.");
+        return;
+    }
+
+    Console.WriteLine();
+    Console.WriteLine("── Asking Claude... ──");
+    var answer = await summarizer.AnswerQuestionAsync(question, recentEmails, upcomingEvents);
+
+    Console.WriteLine();
+    Console.WriteLine("── Answer: ──");
+    Console.WriteLine(answer);
+
+    Console.WriteLine();
+    Console.Write("Send answer to Telegram? (y/n): ");
+    if (Console.ReadLine()?.Trim().ToLower() == "y")
+    {
+        await telegram.SendAlertAsync(answer);
         Console.WriteLine("Sent!");
     }
     else
