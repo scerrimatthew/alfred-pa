@@ -22,15 +22,7 @@ public class TelegramNotificationService : INotificationService
         var chunks = SplitMessage(message);
         foreach (var chunk in chunks)
         {
-            try
-            {
-                await client.SendMessage(chatId, chunk, parseMode: ParseMode.MarkdownV2);
-            }
-            catch (Exception ex) when (ex.Message.Contains("can't parse entities"))
-            {
-                _logger.LogWarning("MarkdownV2 parse failed, falling back to plain text");
-                await client.SendMessage(chatId, StripMarkdown(chunk));
-            }
+            await client.SendMessage(chatId, chunk, parseMode: ParseMode.Html, linkPreviewOptions: new Telegram.Bot.Types.LinkPreviewOptions { IsDisabled = true });
         }
 
         _logger.LogInformation("Sent Telegram alert ({Chunks} chunk(s))", chunks.Count);
@@ -72,7 +64,6 @@ public class TelegramNotificationService : INotificationService
                 break;
             }
 
-            // Try to split at a newline
             var splitIndex = remaining.LastIndexOf('\n', MaxMessageLength);
             if (splitIndex <= 0)
                 splitIndex = MaxMessageLength;
@@ -82,15 +73,5 @@ public class TelegramNotificationService : INotificationService
         }
 
         return chunks;
-    }
-
-    private static string StripMarkdown(string text)
-    {
-        return text
-            .Replace("*", "")
-            .Replace("_", "")
-            .Replace("~", "")
-            .Replace("`", "")
-            .Replace("\\", "");
     }
 }

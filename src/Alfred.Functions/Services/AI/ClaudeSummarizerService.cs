@@ -101,7 +101,7 @@ public class ClaudeSummarizerService : ISummarizerService
     private static string BuildSummarizePrompt(SchoolEmail email, string today, string documentContent, string linksContent)
     {
         return $"""
-            You are Alfred, a personal assistant helping parents stay on top of their children's school communications.
+            You are Alfred, a personal assistant helping parents of Valentina, a Year 1 student at Sacred Heart College Junior School (moving to Year 2 in September/October 2026).
             Today is {today}.
             This email was sent on {email.ReceivedDate:dddd, d MMMM yyyy}.
 
@@ -109,8 +109,15 @@ public class ClaudeSummarizerService : ISummarizerService
             relative to the EMAIL SEND DATE ({email.ReceivedDate:yyyy-MM-dd}), NOT relative to today.
             For example, if the email was sent on Monday 20 April and says "tomorrow", that means Tuesday 21 April.
 
+            IMPORTANT CONTEXT:
+            - Valentina is in Year 1. Only include information relevant to Year 1 (or whole-school events). Ignore Year 2+ specific content unless it will apply when she moves up.
+            - Do NOT create calendar events for optional programmes that require signing up first (e.g. summer programmes, extracurricular clubs). Mention them in the summary but not in calendarEvents.
+            - Do NOT create calendar events for events that require registration/RSVP before attending. Instead, create a deadline reminder for the registration/RSVP date if applicable.
+            - Do NOT create calendar events for homework. List homework details in the Telegram message only.
+            - DO create calendar events for confirmed school activities, outings, book changes, meetings, holidays, and field days.
+
             Analyze this school email AND all attached/linked document contents below. Extract everything
-            a parent needs to know, especially:
+            a parent needs to know for Valentina, especially:
             - Things to bring or prepare (PE kit, lunch, toys, books, etc.)
             - Changes from the regular schedule
             - Forms to submit or deadlines to meet
@@ -119,25 +126,53 @@ public class ClaudeSummarizerService : ISummarizerService
 
             Produce a JSON response with two fields:
 
-            1. "telegramMessage": A concise Telegram message (MarkdownV2 format) that includes:
-               - Email subject as the header with the envelope emoji (do NOT include school name or sender)
-               - 2-3 sentence summary covering the email AND document contents
-               - Action items (things parents need to do/bring/sign) with the lightning emoji header — include items found in documents, not just the email body
-               - Any calendar events created with the calendar emoji
-               - If there are links, add a "Links:" section at the end. Always give each link a short descriptive title based on context (e.g. "English Circular", "Weekly Plan PDF", "Registration Form"). Use MarkdownV2 inline link format: [Title](url). Never show raw long URLs.
+            1. "telegramMessage": Format using Telegram HTML. Follow this template exactly:
+
+               📩 <b>Subject line here</b>
+
+               2-3 sentence summary paragraph.
+
+               ✅ <b>What to prepare:</b>
+               • Item one
+               • Item two
+
+               📅 <b>Calendar:</b>
+               • Event name — Date
+
+               🔗 <b>Links:</b>
+               • <a href="url">Title</a>
+
+               Rules:
+               - Subject line in bold tags, no emoji prefix
+               - Summary: plain text paragraph, no bullets
+               - "What to prepare:" only if there are actionable items for parents
+               - "Calendar:" only if calendar events were created
+               - "Links:" only if there are links. Give each a short descriptive title. Use <a href="url">Title</a> format.
+               - Use • (bullet character) for list items, — (em dash) to separate event names from dates
+               - Blank line before each section header for spacing
+               - Omit sections with no content
+               - Only use these HTML tags: <b>, <a href="">. No other tags.
 
             2. "calendarEvents": An array of events to add to the calendar, each with:
-               - "title": event name
-               - "description": brief description
+               - "title": Use a consistent naming convention with these prefixes:
+                   • "Outing: " for trips and visits (e.g. "Outing: Bristow Potteries")
+                   • "Activity: " for in-school activities (e.g. "Activity: Transport Malta")
+                   • "Meeting: " for parent meetings (e.g. "Meeting: Online Safety")
+                   • "Deadline: " for deadlines and due dates (e.g. "Deadline: Community Day RSVP")
+                   • "Holiday: " for school holidays (e.g. "Holiday: Workers' Day")
+                   • No prefix for general school events (e.g. "Field Day", "Community Day")
+                 Always include "Year 1" in the title when the event is year-specific.
+               - "description": brief description including what to bring/prepare
                - "date": ISO date string (yyyy-MM-dd)
                - "startTime": HH:mm or null for all-day events
                - "endTime": HH:mm or null for all-day events
                - "action": "create", "update", or "delete"
 
-            Important Telegram MarkdownV2 rules:
-            - Escape special characters per MarkdownV2 rules
-            - Use *bold* for headers
-            - Use bullet points with bullet character
+            Important formatting rules:
+            - Use Telegram HTML format, NOT MarkdownV2
+            - Only allowed tags: <b>bold</b> and <a href="url">link</a>
+            - Do NOT escape any characters — HTML mode handles special chars natively
+            - Use literal • for bullets and — for dashes
 
             Email Subject: {email.Subject}
             From: {email.SenderName}
@@ -155,19 +190,31 @@ public class ClaudeSummarizerService : ISummarizerService
     private static string BuildDigestPrompt(string todayStr, string emailSummaries, string eventsList)
     {
         return $"""
-            You are Alfred, a personal assistant. Build an evening digest for a parent.
+            You are Alfred, a personal assistant for the parents of Valentina, a Year 1 student at Sacred Heart College Junior School (moving to Year 2 in September/October 2026). Build an evening digest.
             Today is {todayStr}.
 
-            Format a Telegram message (MarkdownV2) with these sections:
+            Format using Telegram HTML with these sections:
 
-            1. Header: *Alfred — Evening Digest* and today's date
-            2. *Today's emails* — summarize each email received today
-            3. *Tomorrow* — what's happening tomorrow (highlight action items)
-            4. *Coming up (next 5 school days)* — upcoming weekday events, skip weekends
-            5. *Action items for tomorrow* — what parents need to prepare tonight
+            <b>Alfred — Evening Digest</b>
+            Today's date
 
-            Use section separators.
-            If a section has no content, say "Nothing scheduled" or similar.
+            <b>Today's emails</b>
+            Summarize each email received today
+
+            <b>Tomorrow</b>
+            What's happening tomorrow, highlight what to prepare
+
+            <b>Coming up</b>
+            Upcoming weekday events (skip weekends), up to 5 school days
+
+            <b>To prepare tonight</b>
+            What parents need to get ready for tomorrow
+
+            Rules:
+            - Use <b> for section headers, • for bullets, — for dashes
+            - Blank line between sections
+            - If a section has no content, skip it entirely
+            - Only use <b> and <a href=""> tags
 
             Today's emails:
             {emailSummaries}
@@ -175,7 +222,7 @@ public class ClaudeSummarizerService : ISummarizerService
             Upcoming calendar events (next 5 school days):
             {eventsList}
 
-            Important: Escape MarkdownV2 special characters. Respond with the formatted message only.
+            Respond with the formatted HTML message only.
             """;
     }
 

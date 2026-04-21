@@ -108,32 +108,44 @@ public class GoogleCalendarService : ICalendarService
 
     private async Task<bool> HasExistingCalendarEventAsync(CalendarService calendarService, CalendarEventInfo eventInfo)
     {
+        // Check the target date plus 1 day on either side to catch off-by-one date errors
         var request = calendarService.Events.List(_alfredOptions.SharedCalendarId);
-        request.TimeMinDateTimeOffset = new DateTimeOffset(eventInfo.Date);
-        request.TimeMaxDateTimeOffset = new DateTimeOffset(eventInfo.Date.AddDays(1));
+        request.TimeMinDateTimeOffset = new DateTimeOffset(eventInfo.Date.AddDays(-1));
+        request.TimeMaxDateTimeOffset = new DateTimeOffset(eventInfo.Date.AddDays(2));
         request.SingleEvents = true;
         request.MaxResults = 50;
 
         var response = await request.ExecuteAsync();
         if (response.Items is null) return false;
 
-        // Check if any existing event has a similar title
-        var newTitle = NormalizeForComparison(eventInfo.Title);
-        return response.Items.Any(e =>
-        {
-            var existingTitle = NormalizeForComparison(e.Summary ?? "");
-            return existingTitle.Contains(newTitle) || newTitle.Contains(existingTitle);
-        });
+        return response.Items.Any(e => TitlesAreSimilar(eventInfo.Title, e.Summary ?? ""));
     }
 
-    private static string NormalizeForComparison(string text)
+    private static bool TitlesAreSimilar(string a, string b)
     {
-        return text
+        var wordsA = ExtractSignificantWords(a);
+        var wordsB = ExtractSignificantWords(b);
+
+        if (wordsA.Count == 0 || wordsB.Count == 0) return false;
+
+        var shared = wordsA.Intersect(wordsB).Count();
+        var smaller = Math.Min(wordsA.Count, wordsB.Count);
+
+        // If at least half the significant words match, consider them similar
+        return shared >= Math.Ceiling(smaller / 2.0);
+    }
+
+    private static readonly HashSet<string> StopWords =
+        ["year", "1", "2", "3", "4", "5", "6", "the", "a", "an", "for", "and", "of", "to", "in", "at", "on", "by", "all"];
+
+    private static HashSet<string> ExtractSignificantWords(string text)
+    {
+        var words = text
             .ToLowerInvariant()
-            .Replace("year 1", "").Replace("year 2", "").Replace("year 3", "")
-            .Replace("(year 1)", "").Replace("(year 2)", "").Replace("(year 3)", "")
-            .Replace("-", " ").Replace(":", " ")
-            .Trim();
+            .Split([' ', '-', ':', '(', ')', ',', '.'], StringSplitOptions.RemoveEmptyEntries)
+            .Where(w => !StopWords.Contains(w) && w.Length > 1)
+            .ToHashSet();
+        return words;
     }
 
     private async Task UpdateEventAsync(CalendarService calendarService, CalendarEventInfo eventInfo, string emailId)
