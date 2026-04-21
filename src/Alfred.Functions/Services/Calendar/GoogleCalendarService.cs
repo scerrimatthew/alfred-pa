@@ -213,18 +213,21 @@ public class GoogleCalendarService : ICalendarService
             var startDt = eventInfo.Date.Add(eventInfo.StartTime!.Value);
             var endDt = eventInfo.Date.Add(eventInfo.EndTime ?? eventInfo.StartTime.Value.Add(TimeSpan.FromHours(1)));
 
+            var maltaTz = TimeZoneInfo.FindSystemTimeZoneById("Europe/Malta");
+            var offset = maltaTz.GetUtcOffset(startDt);
+
             calendarEvent.Start = new EventDateTime
             {
-                DateTimeDateTimeOffset = new DateTimeOffset(startDt, TimeSpan.FromHours(1)), // GMT+1
+                DateTimeDateTimeOffset = new DateTimeOffset(startDt, offset),
                 TimeZone = "Europe/Malta"
             };
             calendarEvent.End = new EventDateTime
             {
-                DateTimeDateTimeOffset = new DateTimeOffset(endDt, TimeSpan.FromHours(1)),
+                DateTimeDateTimeOffset = new DateTimeOffset(endDt, offset),
                 TimeZone = "Europe/Malta"
             };
 
-            // Timed event — reminder at 6 PM (18:00) GMT+1 the day before
+            // Timed event — reminder at 6 PM the day before
             var reminderTime = eventInfo.Date.AddDays(-1).AddHours(18);
             var minutesBefore = (int)(startDt - reminderTime).TotalMinutes;
             if (minutesBefore < 0) minutesBefore = 6 * 60; // fallback

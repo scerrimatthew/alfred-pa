@@ -77,6 +77,7 @@ public partial class GmailReaderService : IGmailReaderService
         }
 
         _logger.LogInformation("Found {Count} new school emails to process", newEmails.Count);
+        newEmails.Reverse(); // Process oldest first
         return newEmails;
     }
 
