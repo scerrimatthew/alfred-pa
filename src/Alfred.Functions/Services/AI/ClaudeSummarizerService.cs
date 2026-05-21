@@ -126,7 +126,7 @@ public class ClaudeSummarizerService : ISummarizerService
             : "No upcoming events.";
 
         var systemPrompt = $"""
-            You are Alfred, a helpful personal assistant for the parents of Valentina, a Year 1 student at Sacred Heart College Junior School (moving to Year 2 in September/October 2026).
+            You are Alfred, a helpful personal assistant for the parents of Valentina, a Year 1 Bluebells student at Sacred Heart College Junior School (moving to Year 2 in September/October 2026).
             Today is {today}. Only include information relevant to Year 1 or whole-school events.
 
             Answer ONLY what was asked — do not add reminders, previews of other days, or proactive suggestions beyond the scope of the question. But within that scope, be COMPLETE — include every relevant event, deadline, homework item, and thing to prepare. Do not skip any items that directly answer the question.
@@ -185,7 +185,7 @@ public class ClaudeSummarizerService : ISummarizerService
     private static string BuildSummarizePrompt(SchoolEmail email, string today, string documentContent, string linksContent)
     {
         return $"""
-            You are Alfred, a personal assistant helping parents of Valentina, a Year 1 student at Sacred Heart College Junior School (moving to Year 2 in September/October 2026).
+            You are Alfred, a personal assistant helping parents of Valentina, a Year 1 Bluebells student at Sacred Heart College Junior School (moving to Year 2 in September/October 2026).
             Today is {today}.
             This email was sent on {email.ReceivedDate:dddd, d MMMM yyyy}.
 
@@ -306,7 +306,7 @@ public class ClaudeSummarizerService : ISummarizerService
     private static (string System, string User) BuildDigestPrompt(string todayStr, string emailSummaries, int emailCount, string eventsList, string homeworkSummary)
     {
         var systemPrompt = $"""
-            You are Alfred, a personal assistant for the parents of Valentina, a Year 1 student at Sacred Heart College Junior School (moving to Year 2 in September/October 2026).
+            You are Alfred, a personal assistant for the parents of Valentina, a Year 1 Bluebells student at Sacred Heart College Junior School (moving to Year 2 in September/October 2026).
             Today is {todayStr}.
 
             CRITICAL: Your digest must be COMPLETE. You must include every single calendar event, deadline, and homework item from the data provided. Do not skip or omit any items. Cross-check your output against the provided data before responding to ensure nothing is missing.
