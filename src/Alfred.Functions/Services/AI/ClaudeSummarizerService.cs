@@ -81,13 +81,14 @@ public class ClaudeSummarizerService : ISummarizerService
             ? string.Join("\n", homeworkItems)
             : "No homework assignments.";
 
-        var prompt = BuildDigestPrompt(todayStr, emailSummaries, eventsList, homeworkSummary);
+        var (systemPrompt, userPrompt) = BuildDigestPrompt(todayStr, emailSummaries, recentEmails.Count, eventsList, homeworkSummary);
 
         var parameters = new MessageParameters
         {
-            Model = Anthropic.SDK.Constants.AnthropicModels.Claude45Sonnet,
+            Model = Anthropic.SDK.Constants.AnthropicModels.Claude46Opus,
             MaxTokens = 2048,
-            Messages = [new Message(RoleType.User, prompt)]
+            System = [new SystemMessage(systemPrompt)],
+            Messages = [new Message(RoleType.User, userPrompt)]
         };
 
         var response = await client.Messages.GetClaudeMessageAsync(parameters);
@@ -124,12 +125,17 @@ public class ClaudeSummarizerService : ISummarizerService
             }))
             : "No upcoming events.";
 
-        var prompt = $"""
+        var systemPrompt = $"""
             You are Alfred, a helpful personal assistant for the parents of Valentina, a Year 1 student at Sacred Heart College Junior School (moving to Year 2 in September/October 2026).
             Today is {today}. Only include information relevant to Year 1 or whole-school events.
 
-            Answer the question naturally and concisely. Do not mention where the information comes from,
-            do not reference "the data", emails, or calendar sources. Just answer as if you know it.
+            CRITICAL: Your answer must be COMPLETE. Include every relevant item from the data — every event, deadline, homework item, and thing to prepare. Do not skip or omit any items. It is better to include too much than to miss something.
+
+            Keep your answer short and to the point — use bullet points, not paragraphs — but never leave out relevant information.
+
+            DEFAULT SCHEDULE — PE kit is needed on Monday, Tuesday, and Friday. On all other days (Wednesday, Thursday) it is regular school uniform. When answering questions about what to wear or bring, state which one applies (e.g. "PE kit" or "regular school uniform"). If any email explicitly states a different PE schedule for a specific day or week, that email takes priority over the default.
+
+            Do not mention where the information comes from. Do not reference "the data", emails, or calendar sources. Just answer as if you know it.
             If you genuinely don't have the information, say you're not sure.
 
             When relevant, include links to documents using <a href="url">title</a> format.
@@ -138,21 +144,25 @@ public class ClaudeSummarizerService : ISummarizerService
             - Use <b>bold</b> for emphasis
             - Use • for bullet points
             - Only use <b> and <a href=""> tags
+            """;
 
-            ---
+        var userPrompt = $"""
+            ## RECENT EMAILS
             {emailSummaries}
 
+            ## CALENDAR EVENTS
             {eventsList}
-            ---
 
-            Question: {question}
+            ## QUESTION
+            {question}
             """;
 
         var parameters = new MessageParameters
         {
-            Model = Anthropic.SDK.Constants.AnthropicModels.Claude45Sonnet,
+            Model = Anthropic.SDK.Constants.AnthropicModels.Claude46Opus,
             MaxTokens = 2048,
-            Messages = [new Message(RoleType.User, prompt)]
+            System = [new SystemMessage(systemPrompt)],
+            Messages = [new Message(RoleType.User, userPrompt)]
         };
 
         var response = await client.Messages.GetClaudeMessageAsync(parameters);
@@ -263,6 +273,17 @@ public class ClaudeSummarizerService : ISummarizerService
                Include the subject, what needs to be done, and the due date if given.
                Set to null if no homework is mentioned.
 
+            4. "requiresImmediateAlert": A boolean indicating whether this email is urgent enough to
+               send an immediate Telegram notification. Most emails do NOT need this — they will be
+               included in the evening digest instead. Set to true ONLY for:
+               - Last-minute schedule changes (e.g. cancelled outing, early dismissal tomorrow)
+               - Urgent warnings or emergencies (e.g. health alerts, school closure)
+               - Deadlines that expire today or tomorrow
+               - Time-sensitive requests that cannot wait until the evening digest
+               Set to false for everything else, including: weekly plans, homework, routine reminders,
+               upcoming events more than 2 days away, newsletters, photo galleries, general updates,
+               and anything that can safely wait for the evening digest.
+
             Important formatting rules:
             - Use Telegram HTML format, NOT MarkdownV2
             - Only allowed tags: <b>bold</b> and <a href="url">link</a>
@@ -282,54 +303,59 @@ public class ClaudeSummarizerService : ISummarizerService
             """;
     }
 
-    private static string BuildDigestPrompt(string todayStr, string emailSummaries, string eventsList, string homeworkSummary)
+    private static (string System, string User) BuildDigestPrompt(string todayStr, string emailSummaries, int emailCount, string eventsList, string homeworkSummary)
     {
-        return $"""
-            You are Alfred, a personal assistant for the parents of Valentina, a Year 1 student at Sacred Heart College Junior School (moving to Year 2 in September/October 2026). Build an evening digest.
+        var systemPrompt = $"""
+            You are Alfred, a personal assistant for the parents of Valentina, a Year 1 student at Sacred Heart College Junior School (moving to Year 2 in September/October 2026).
             Today is {todayStr}.
 
-            Format using Telegram HTML with these sections:
+            CRITICAL: Your digest must be COMPLETE. You must include every single calendar event, deadline, and homework item from the data provided. Do not skip or omit any items. Cross-check your output against the provided data before responding to ensure nothing is missing.
+
+            Keep each bullet point short — but never leave out an item.
+
+
+            Build an evening digest formatted using Telegram HTML with exactly 3 sections:
 
             🏫 <b>Good Evening!</b>
-            Today's date
+            Today's date and how many school emails were received today (e.g. "2 school emails received today" or "No school emails today").
 
             ━━━━━━━━━━━━━━━
 
-            📩 <b>TODAY'S EMAILS</b>
-            Summarize each email received today
-
             ⏰ <b>TOMORROW</b>
-            What's happening tomorrow, highlight what to prepare
+            Everything relevant for tomorrow in one combined section:
+            - Every calendar event and deadline happening tomorrow
+            - What to prepare tonight (things to bring, forms to submit, items to pack, etc.)
+            - Any homework due tomorrow
+            - Keep it actionable — parents should know exactly what to do tonight and what to expect tomorrow
+            - Only include information from the provided data, not routine assumptions
 
-            📝 <b>HOMEWORK</b>
-            Current homework assignments and due dates
-
-            📅 <b>COMING UP</b>
-            Upcoming weekday events (skip weekends), up to 5 school days
-
-            🎒 <b>TO PREPARE TONIGHT</b>
-            What parents need to get ready for tomorrow
+            📅 <b>LATER</b>
+            What's happening over the next 3 school days after tomorrow. For each event or deadline, include what parents need to prepare (things to bring, forms to submit, homework due, etc.).
 
             Rules:
             - Section headers must be UPPERCASE bold with the emoji prefix, exactly as shown above
             - Add a blank line before AND after each section header for clear visual spacing
-            - Add the ━━━━━━━━━━━━━━━ separator line only once, right after the date
+            - Add the ━━━━━━━━━━━━━━━ separator line only once, right after the greeting
             - Use • for bullets, — for dashes
-            - Only use emojis on section headers (the emoji prefix shown above). Do NOT use emojis in bullet point content
+            - Only use emojis on section headers. Do NOT use emojis in bullet point content
             - If a section has no content, skip it entirely
             - Only use <b> and <a href=""> tags
+            """;
 
-            Today's emails:
+        var userPrompt = $"""
+            ## TODAY'S EMAILS ({emailCount} received)
             {emailSummaries}
 
-            Upcoming calendar events (next 5 school days):
+            ## CALENDAR EVENTS
             {eventsList}
 
-            Homework assignments from recent emails:
+            ## HOMEWORK ASSIGNMENTS
             {homeworkSummary}
 
-            Respond with the formatted HTML message only.
+            Respond with the formatted HTML digest only.
             """;
+
+        return (systemPrompt, userPrompt);
     }
 
     private static EmailDigest ParseDigestResponse(string json)
@@ -356,6 +382,9 @@ public class ClaudeSummarizerService : ISummarizerService
             var homework = root.TryGetProperty("homework", out var hwProp) && hwProp.ValueKind != JsonValueKind.Null
                 ? hwProp.GetString()
                 : null;
+
+            var requiresImmediateAlert = root.TryGetProperty("requiresImmediateAlert", out var riaProp)
+                && riaProp.ValueKind == JsonValueKind.True;
 
             var calendarEvents = new List<CalendarEventInfo>();
             if (root.TryGetProperty("calendarEvents", out var eventsArray))
@@ -388,7 +417,8 @@ public class ClaudeSummarizerService : ISummarizerService
             {
                 TelegramMessage = telegramMessage,
                 CalendarEvents = calendarEvents,
-                Homework = homework
+                Homework = homework,
+                RequiresImmediateAlert = requiresImmediateAlert
             };
         }
         catch (JsonException)

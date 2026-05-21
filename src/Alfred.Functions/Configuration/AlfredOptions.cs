@@ -9,7 +9,7 @@ public class AlfredOptions
     public string TelegramChatId { get; set; } = string.Empty;
     public bool SendEmptyDigest { get; set; } = false;
     public int LookbackHours { get; set; } = 25;
-    public int SchoolDaysAhead { get; set; } = 5;
+    public int SchoolDaysAhead { get; set; } = 3;
     public string TelegramWebhookSecret { get; set; } = string.Empty;
     public int ChatLookbackDays { get; set; } = 30;
     public string AllowedTelegramUserIds { get; set; } = string.Empty;

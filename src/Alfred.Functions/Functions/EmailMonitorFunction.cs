@@ -58,7 +58,14 @@ public class EmailMonitorFunction
 
                     await _calendarService.ProcessEventsAsync(digest.CalendarEvents, email.MessageId);
 
-                    await _notificationService.SendAlertAsync(digest.TelegramMessage);
+                    if (digest.RequiresImmediateAlert)
+                    {
+                        await _notificationService.SendAlertAsync(digest.TelegramMessage);
+                    }
+                    else
+                    {
+                        _logger.LogInformation("Skipping immediate notification, will appear in evening digest: {Subject}", email.Subject);
+                    }
 
                     await _stateService.MarkEmailProcessedAsync(
                         email.MessageId, email.Subject, email.SenderName, digest.TelegramMessage, digest.Homework);

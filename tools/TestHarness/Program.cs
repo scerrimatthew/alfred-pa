@@ -37,7 +37,7 @@ var alfredOptions = Options.Create(new AlfredOptions
     TelegramChatId = GetSetting("Alfred:TelegramChatId"),
     LookbackHours = args.Length > 0 && int.TryParse(args[0], out var lhArg) ? lhArg
         : int.TryParse(GetSetting("Alfred:LookbackHours"), out var lh) ? lh : 25,
-    SchoolDaysAhead = int.TryParse(GetSetting("Alfred:SchoolDaysAhead"), out var sd) ? sd : 5
+    SchoolDaysAhead = int.TryParse(GetSetting("Alfred:SchoolDaysAhead"), out var sd) ? sd : 3
 });
 
 var googleOptions = Options.Create(new GoogleOptions
