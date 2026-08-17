@@ -240,6 +240,7 @@ public partial class GmailReaderService : IGmailReaderService
             return new SchoolEmail
             {
                 MessageId = message.Id,
+                ThreadId = message.ThreadId ?? message.Id,
                 Subject = subject,
                 SenderName = senderName,
                 SenderEmail = ExtractEmail(from),

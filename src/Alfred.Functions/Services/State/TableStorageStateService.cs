@@ -45,13 +45,13 @@ public class TableStorageStateService : IStateService
         }
     }
 
-    public Task MarkEmailProcessedAsync(string messageId, string subject, string senderName, string summary, string? homework = null, string? category = null) =>
-        MarkProcessedAsync(SchoolPartition, messageId, subject, senderName, summary, homework, category);
+    public Task MarkEmailProcessedAsync(string messageId, string subject, string senderName, string summary, string? homework = null, string? category = null, string? threadId = null) =>
+        MarkProcessedAsync(SchoolPartition, messageId, subject, senderName, summary, homework, category, suppressed: false, threadId);
 
-    public Task MarkPersonalEmailProcessedAsync(string messageId, string subject, string senderName, string summary, string? category = null, bool suppressed = false) =>
-        MarkProcessedAsync(PersonalPartition, messageId, subject, senderName, summary, homework: null, category, suppressed);
+    public Task MarkPersonalEmailProcessedAsync(string messageId, string subject, string senderName, string summary, string? category = null, bool suppressed = false, string? threadId = null) =>
+        MarkProcessedAsync(PersonalPartition, messageId, subject, senderName, summary, homework: null, category, suppressed, threadId);
 
-    private async Task MarkProcessedAsync(string partition, string messageId, string subject, string senderName, string summary, string? homework, string? category, bool suppressed = false)
+    private async Task MarkProcessedAsync(string partition, string messageId, string subject, string senderName, string summary, string? homework, string? category, bool suppressed = false, string? threadId = null)
     {
         var tableClient = _tableServiceClient.GetTableClient(ProcessedEmailsTable);
         await tableClient.CreateIfNotExistsAsync();
@@ -66,6 +66,7 @@ public class TableStorageStateService : IStateService
             Homework = homework,
             Category = category,
             Suppressed = suppressed,
+            GmailThreadId = threadId,
             ProcessedAt = DateTimeOffset.UtcNow
         };
 

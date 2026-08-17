@@ -71,7 +71,8 @@ public class EmailMonitorFunction
 
                     if (digest.RequiresImmediateAlert || inSummerBreak)
                     {
-                        await _notificationService.SendAlertAsync(digest.TelegramMessage);
+                        var gmailLink = $"\n\n<a href=\"{GmailLinks.ForThread(email.ThreadId)}\">Open in Gmail</a>";
+                        await _notificationService.SendAlertAsync(digest.TelegramMessage + gmailLink);
                     }
                     else
                     {
@@ -79,7 +80,7 @@ public class EmailMonitorFunction
                     }
 
                     await _stateService.MarkEmailProcessedAsync(
-                        email.MessageId, email.Subject, email.SenderName, digest.TelegramMessage, digest.Homework, digest.Category);
+                        email.MessageId, email.Subject, email.SenderName, digest.TelegramMessage, digest.Homework, digest.Category, email.ThreadId);
 
                     await _gmailReader.MarkAsReadAndLabelAsync(email.MessageId, LabelNames.ForSchool(digest.Category));
 

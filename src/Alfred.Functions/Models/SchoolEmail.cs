@@ -3,6 +3,7 @@ namespace Alfred.Functions.Models;
 public class SchoolEmail
 {
     public required string MessageId { get; set; }
+    public string ThreadId { get; set; } = string.Empty;
     public required string Subject { get; set; }
     public required string SenderName { get; set; }
     public required string SenderEmail { get; set; }

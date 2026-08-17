@@ -12,7 +12,7 @@ public class InMemoryStateService : IStateService
     public Task<bool> IsEmailProcessedAsync(string messageId) =>
         Task.FromResult(_emails.ContainsKey(messageId));
 
-    public Task MarkEmailProcessedAsync(string messageId, string subject, string senderName, string summary, string? homework = null, string? category = null)
+    public Task MarkEmailProcessedAsync(string messageId, string subject, string senderName, string summary, string? homework = null, string? category = null, string? threadId = null)
     {
         _emails[messageId] = new ProcessedEmailEntity
         {
@@ -31,7 +31,7 @@ public class InMemoryStateService : IStateService
     public Task<bool> IsPersonalEmailProcessedAsync(string messageId) =>
         Task.FromResult(_personalEmails.ContainsKey(messageId));
 
-    public Task MarkPersonalEmailProcessedAsync(string messageId, string subject, string senderName, string summary, string? category = null, bool suppressed = false)
+    public Task MarkPersonalEmailProcessedAsync(string messageId, string subject, string senderName, string summary, string? category = null, bool suppressed = false, string? threadId = null)
     {
         _personalEmails[messageId] = new ProcessedEmailEntity
         {

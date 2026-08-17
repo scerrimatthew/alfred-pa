@@ -308,7 +308,10 @@ public class ClaudeSummarizerService : ISummarizerService
             ? string.Join("\n", personalEmails.OrderByDescending(e => e.ProcessedAt).Select(e =>
             {
                 var muted = e.Suppressed ? " [muted]" : "";
-                return $"- id={e.RowKey} [{e.ProcessedAt:ddd d MMM yyyy}] [{e.Category ?? "other"}]{muted} {e.SenderName} — {e.Subject}: {e.Summary}";
+                var link = !string.IsNullOrEmpty(e.GmailThreadId)
+                    ? $" link={Gmail.GmailLinks.ForThread(e.GmailThreadId)}"
+                    : "";
+                return $"- id={e.RowKey} [{e.ProcessedAt:ddd d MMM yyyy}] [{e.Category ?? "other"}]{muted} {e.SenderName} — {e.Subject}: {e.Summary}{link}";
             }))
             : "No recent personal emails.";
 
@@ -349,6 +352,8 @@ public class ClaudeSummarizerService : ISummarizerService
               ("what am I ignoring?", "start showing me Bolt reports again" — list first to find
               the rule id if you don't have it).
             Personal emails are listed with id=... — pass that id to tools. NEVER show raw ids in replies.
+            Personal emails also carry link=... — when discussing a specific email, offer it as
+            <a href="link">Open in Gmail</a> so Matthew can jump straight to it.
             Emails marked [muted] were suppressed by an existing rule — mention them only if asked.
             When Matthew references an email loosely ("that HSBC one"), match it by sender/subject.
             If the reference is ambiguous, ask which one he means instead of guessing.

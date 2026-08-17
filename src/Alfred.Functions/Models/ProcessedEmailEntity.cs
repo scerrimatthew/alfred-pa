@@ -17,4 +17,5 @@ public class ProcessedEmailEntity : ITableEntity
     public string? Homework { get; set; }
     public string? Category { get; set; }
     public bool Suppressed { get; set; }
+    public string? GmailThreadId { get; set; }
 }
