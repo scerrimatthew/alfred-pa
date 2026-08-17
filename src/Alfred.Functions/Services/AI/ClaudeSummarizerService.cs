@@ -315,7 +315,7 @@ public class ClaudeSummarizerService : ISummarizerService
             ? string.Join("\n", personalActions.Select(e =>
             {
                 var date = e.Start.DateTimeDateTimeOffset?.ToString("ddd d MMM yyyy HH:mm") ?? e.Start.Date ?? "TBD";
-                return $"- {date}: {e.Summary} — {e.Description}";
+                return $"- eventId={e.Id} {date}: {e.Summary} — {e.Description}";
             }))
             : "No upcoming personal actions.";
 
@@ -348,6 +348,11 @@ public class ClaudeSummarizerService : ISummarizerService
             - list_suppression_rules / remove_suppression_rule: review or undo suppression rules
               ("what am I ignoring?", "start showing me Bolt reports again" — list first to find
               the rule id if you don't have it).
+            - update_calendar_event / delete_calendar_event: fix or remove a reminder Alfred created
+              when Matthew says it's wrong or irrelevant ("move the dentist to Friday", "the GO bill
+              is already paid, drop the reminder"). Personal actions carry eventId=... — pass it to
+              these tools. Only Alfred-created events can be changed; his own calendar entries are
+              off-limits.
             Personal emails are listed with id=... — pass that id to tools. NEVER show raw ids in replies.
             Personal emails also carry link=... — when discussing a specific email, offer it as
             <a href="link">Open in Gmail</a> so Matthew can jump straight to it.
@@ -438,6 +443,35 @@ public class ClaudeSummarizerService : ISummarizerService
                         "rule_id": { "type": "string", "description": "The id of the rule to remove (from list_suppression_rules)" }
                     },
                     "required": ["rule_id"]
+                }
+                """)),
+            new Anthropic.SDK.Common.Function(
+                "update_calendar_event",
+                "Change an Alfred-created reminder/event on Matthew's personal calendar. Only pass the fields being changed.",
+                System.Text.Json.Nodes.JsonNode.Parse("""
+                {
+                    "type": "object",
+                    "properties": {
+                        "event_id": { "type": "string", "description": "The calendar event id (from eventId=...)" },
+                        "title": { "type": "string" },
+                        "date": { "type": "string", "description": "New date, yyyy-MM-dd" },
+                        "start_time": { "type": "string", "description": "New start time, HH:mm (omit to keep all-day or existing time)" },
+                        "end_time": { "type": "string", "description": "New end time, HH:mm" },
+                        "description": { "type": "string" }
+                    },
+                    "required": ["event_id"]
+                }
+                """)),
+            new Anthropic.SDK.Common.Function(
+                "delete_calendar_event",
+                "Delete an Alfred-created reminder/event from Matthew's personal calendar.",
+                System.Text.Json.Nodes.JsonNode.Parse("""
+                {
+                    "type": "object",
+                    "properties": {
+                        "event_id": { "type": "string", "description": "The calendar event id (from eventId=...)" }
+                    },
+                    "required": ["event_id"]
                 }
                 """))
         };

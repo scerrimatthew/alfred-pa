@@ -100,6 +100,72 @@ public class GoogleCalendarService : ICalendarService
         return response.Items?.ToList() ?? [];
     }
 
+    public async Task<string> UpdatePersonalEventAsync(string eventId, string? title, DateTime? date, TimeSpan? startTime, TimeSpan? endTime, string? description)
+    {
+        var calendarService = CreateCalendarService();
+        var ev = await GetAlfredEventOrThrowAsync(calendarService, eventId);
+
+        if (title is not null) ev.Summary = title;
+        if (description is not null) ev.Description = description;
+
+        if (date is not null || startTime is not null || endTime is not null)
+        {
+            var existingDate = ev.Start?.Date is not null
+                ? DateTime.Parse(ev.Start.Date)
+                : ev.Start?.DateTimeDateTimeOffset?.Date ?? DateTime.Today;
+            var newDate = date ?? existingDate;
+            var newStart = startTime ?? ev.Start?.DateTimeDateTimeOffset?.TimeOfDay;
+
+            if (newStart is null)
+            {
+                // All-day event (stays all-day unless a start time was provided)
+                ev.Start = new EventDateTime { Date = newDate.ToString("yyyy-MM-dd"), DateTimeDateTimeOffset = null };
+                ev.End = new EventDateTime { Date = newDate.AddDays(1).ToString("yyyy-MM-dd"), DateTimeDateTimeOffset = null };
+            }
+            else
+            {
+                var startDt = newDate.Date.Add(newStart.Value);
+                var endDt = newDate.Date.Add(endTime
+                    ?? ev.End?.DateTimeDateTimeOffset?.TimeOfDay
+                    ?? newStart.Value.Add(TimeSpan.FromHours(1)));
+                if (endDt <= startDt) endDt = startDt.AddHours(1);
+
+                var maltaTz = TimeZoneInfo.FindSystemTimeZoneById("Europe/Malta");
+                var offset = maltaTz.GetUtcOffset(startDt);
+                ev.Start = new EventDateTime { DateTimeDateTimeOffset = new DateTimeOffset(startDt, offset), TimeZone = "Europe/Malta", Date = null };
+                ev.End = new EventDateTime { DateTimeDateTimeOffset = new DateTimeOffset(endDt, offset), TimeZone = "Europe/Malta", Date = null };
+            }
+        }
+
+        await calendarService.Events.Update(ev, _alfredOptions.PersonalCalendarId, eventId).ExecuteAsync();
+        _logger.LogInformation("Updated personal event {EventId}: {Title}", eventId, ev.Summary);
+        return ev.Summary ?? "event";
+    }
+
+    public async Task<string> DeletePersonalEventAsync(string eventId)
+    {
+        var calendarService = CreateCalendarService();
+        var ev = await GetAlfredEventOrThrowAsync(calendarService, eventId);
+
+        await calendarService.Events.Delete(_alfredOptions.PersonalCalendarId, eventId).ExecuteAsync();
+        _logger.LogInformation("Deleted personal event {EventId}: {Title}", eventId, ev.Summary);
+        return ev.Summary ?? "event";
+    }
+
+    private async Task<Event> GetAlfredEventOrThrowAsync(CalendarService calendarService, string eventId)
+    {
+        var ev = await calendarService.Events.Get(_alfredOptions.PersonalCalendarId, eventId).ExecuteAsync();
+
+        var isAlfredEvent = ev.ExtendedProperties?.Private__ is not null
+            && ev.ExtendedProperties.Private__.TryGetValue("alfred", out var tag)
+            && tag == "true";
+
+        if (!isAlfredEvent)
+            throw new InvalidOperationException("This event was not created by Alfred — refusing to modify the user's own calendar entries.");
+
+        return ev;
+    }
+
     private async Task CreateEventAsync(CalendarService calendarService, CalendarEventInfo eventInfo, string emailId, string calendarId, bool tagAsAlfred)
     {
         // Check state table first

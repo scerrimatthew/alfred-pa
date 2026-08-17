@@ -195,6 +195,34 @@ public class TelegramWebhookFunction
                 return $"Suppression rule {ruleId} removed.";
             }
 
+            case "update_calendar_event":
+            {
+                var eventId = input?["event_id"]?.GetValue<string>();
+                if (string.IsNullOrWhiteSpace(eventId))
+                    return "Error: no event_id provided.";
+
+                DateTime? date = DateTime.TryParse(input?["date"]?.GetValue<string>(), out var d) ? d : null;
+                TimeSpan? startTime = TimeSpan.TryParse(input?["start_time"]?.GetValue<string>(), out var st) ? st : null;
+                TimeSpan? endTime = TimeSpan.TryParse(input?["end_time"]?.GetValue<string>(), out var et) ? et : null;
+
+                var title = await _calendarService.UpdatePersonalEventAsync(
+                    eventId,
+                    input?["title"]?.GetValue<string>(),
+                    date, startTime, endTime,
+                    input?["description"]?.GetValue<string>());
+                return $"Updated calendar event: {title}.";
+            }
+
+            case "delete_calendar_event":
+            {
+                var eventId = input?["event_id"]?.GetValue<string>();
+                if (string.IsNullOrWhiteSpace(eventId))
+                    return "Error: no event_id provided.";
+
+                var title = await _calendarService.DeletePersonalEventAsync(eventId);
+                return $"Deleted calendar event: {title}.";
+            }
+
             default:
                 return $"Error: unknown tool {toolName}.";
         }
