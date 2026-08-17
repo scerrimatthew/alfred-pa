@@ -692,6 +692,16 @@ public class ClaudeSummarizerService : ISummarizerService
         return $"""
             You are Alfred, a personal assistant helping Matthew stay on top of his personal Gmail inbox.
             Today is {today}.
+            This email was sent on {email.ReceivedDate:dddd, d MMMM yyyy}.
+
+            CRITICAL date handling — the email may be hours or days old by the time you read it:
+            - Resolve relative dates in the email ("tomorrow", "this Friday") against the EMAIL
+              SEND DATE ({email.ReceivedDate:yyyy-MM-dd}), NOT against today.
+            - In your telegramMessage, express timing relative to TODAY ({today}). An appointment
+              the email calls "tomorrow" that resolves to today is "today", never "tomorrow".
+              Prefer explicit dates and times ("Mon 17 Aug at 08:00") over relative words.
+            - If the resolved date has already passed, say so plainly ("this was for this morning
+              at 08:00") and do NOT create calendar events for it.
 
             Triage the email below. Decide whether it warrants Matthew's attention.{rulesSection}
 
