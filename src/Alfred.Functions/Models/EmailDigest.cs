@@ -6,4 +6,5 @@ public class EmailDigest
     public List<CalendarEventInfo> CalendarEvents { get; set; } = [];
     public string? Homework { get; set; }
     public bool RequiresImmediateAlert { get; set; } = false;
+    public string Category { get; set; } = "other";
 }

@@ -5,5 +5,7 @@ namespace Alfred.Functions.Services.Calendar;
 public interface ICalendarService
 {
     Task ProcessEventsAsync(List<CalendarEventInfo> events, string emailId);
+    Task ProcessPersonalEventsAsync(List<CalendarEventInfo> events, string emailId);
     Task<List<Google.Apis.Calendar.v3.Data.Event>> GetUpcomingEventsAsync(int schoolDaysAhead);
+    Task<List<Google.Apis.Calendar.v3.Data.Event>> GetUpcomingPersonalEventsAsync(int daysAhead);
 }

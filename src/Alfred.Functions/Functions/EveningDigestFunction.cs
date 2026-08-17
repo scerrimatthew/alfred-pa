@@ -39,8 +39,25 @@ public class EveningDigestFunction
     {
         _logger.LogInformation("EveningDigest triggered at {Time}", DateTime.UtcNow);
 
+        await SendSchoolDigestAsync();
+        await SendPersonalDigestAsync();
+    }
+
+    private async Task SendSchoolDigestAsync()
+    {
         try
         {
+            var maltaTz = TimeZoneInfo.FindSystemTimeZoneById("Europe/Malta");
+            var todayMalta = TimeZoneInfo.ConvertTime(DateTimeOffset.UtcNow, maltaTz).Date;
+
+            if (_options.IsInSummerBreak(todayMalta))
+            {
+                _logger.LogInformation(
+                    "School digest skipped — summer break ({Start} to {End})",
+                    _options.SummerBreakStart, _options.SummerBreakEnd);
+                return;
+            }
+
             var since = DateTimeOffset.UtcNow.AddHours(-_options.LookbackHours);
             var recentEmails = await _stateService.GetEmailsSinceAsync(since);
 
@@ -48,7 +65,7 @@ public class EveningDigestFunction
 
             if (recentEmails.Count == 0 && upcomingEvents.Count == 0 && !_options.SendEmptyDigest)
             {
-                _logger.LogInformation("No emails or events to report, skipping digest");
+                _logger.LogInformation("No school emails or events to report, skipping school digest");
                 return;
             }
 
@@ -56,13 +73,48 @@ public class EveningDigestFunction
 
             await _notificationService.SendAlertAsync(digestMessage);
 
-            _logger.LogInformation("Evening digest sent successfully ({EmailCount} emails, {EventCount} events)",
+            _logger.LogInformation("School digest sent successfully ({EmailCount} emails, {EventCount} events)",
                 recentEmails.Count, upcomingEvents.Count);
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "EveningDigest failed");
+            _logger.LogError(ex, "School digest failed");
             await _notificationService.SendErrorAsync($"EveningDigest failed: {ex.Message}");
+        }
+    }
+
+    // The personal digest runs year-round — deadlines and appointments don't take summers off
+    private async Task SendPersonalDigestAsync()
+    {
+        if (string.IsNullOrWhiteSpace(_options.PersonalTelegramChatId))
+            return;
+
+        try
+        {
+            var since = DateTimeOffset.UtcNow.AddHours(-_options.LookbackHours);
+            var todaysEmails = (await _stateService.GetPersonalEmailsSinceAsync(since))
+                .Where(e => !e.Suppressed)
+                .ToList();
+
+            var upcomingActions = await _calendarService.GetUpcomingPersonalEventsAsync(_options.PersonalDigestDaysAhead);
+
+            if (todaysEmails.Count == 0 && upcomingActions.Count == 0 && !_options.SendEmptyDigest)
+            {
+                _logger.LogInformation("No personal emails or actions to report, skipping personal digest");
+                return;
+            }
+
+            var digestMessage = await _summarizer.BuildPersonalDigestAsync(todaysEmails, upcomingActions);
+
+            await _notificationService.SendPersonalAlertAsync(digestMessage);
+
+            _logger.LogInformation("Personal digest sent successfully ({EmailCount} emails, {ActionCount} actions)",
+                todaysEmails.Count, upcomingActions.Count);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Personal digest failed");
+            await _notificationService.SendPersonalErrorAsync($"Personal digest failed: {ex.Message}");
         }
     }
 }

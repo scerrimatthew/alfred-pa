@@ -17,7 +17,7 @@ public class TelegramNotificationService : INotificationService
 
     public async Task SendAlertAsync(string message)
     {
-        var (client, chatId) = GetClientAndChatId();
+        var (client, chatId) = GetClientAndChatId("Alfred__TelegramChatId");
 
         var chunks = SplitMessage(message);
         foreach (var chunk in chunks)
@@ -30,12 +30,35 @@ public class TelegramNotificationService : INotificationService
 
     public async Task SendErrorAsync(string errorMessage)
     {
-        var (client, chatId) = GetClientAndChatId();
+        var (client, chatId) = GetClientAndChatId("Alfred__TelegramChatId");
 
         var message = $"⚠️ Alfred encountered an error:\n\n{errorMessage}";
         await client.SendMessage(chatId, message);
 
         _logger.LogInformation("Sent Telegram error notification");
+    }
+
+    public async Task SendPersonalAlertAsync(string message)
+    {
+        var (client, chatId) = GetClientAndChatId("Alfred__PersonalTelegramChatId");
+
+        var chunks = SplitMessage(message);
+        foreach (var chunk in chunks)
+        {
+            await client.SendMessage(chatId, chunk, parseMode: ParseMode.Html, linkPreviewOptions: new Telegram.Bot.Types.LinkPreviewOptions { IsDisabled = true });
+        }
+
+        _logger.LogInformation("Sent personal Telegram alert ({Chunks} chunk(s))", chunks.Count);
+    }
+
+    public async Task SendPersonalErrorAsync(string errorMessage)
+    {
+        var (client, chatId) = GetClientAndChatId("Alfred__PersonalTelegramChatId");
+
+        var message = $"⚠️ Alfred (personal inbox) encountered an error:\n\n{errorMessage}";
+        await client.SendMessage(chatId, message);
+
+        _logger.LogInformation("Sent personal Telegram error notification");
     }
 
     public async Task SendMessageAsync(long chatId, string message)
@@ -53,12 +76,12 @@ public class TelegramNotificationService : INotificationService
         _logger.LogInformation("Sent Telegram reply to chat {ChatId} ({Chunks} chunk(s))", chatId, chunks.Count);
     }
 
-    private static (TelegramBotClient client, string chatId) GetClientAndChatId()
+    private static (TelegramBotClient client, string chatId) GetClientAndChatId(string chatIdVariable)
     {
         var botToken = Environment.GetEnvironmentVariable("Telegram__BotToken")
             ?? throw new InvalidOperationException("Telegram bot token not configured");
-        var chatId = Environment.GetEnvironmentVariable("Alfred__TelegramChatId")
-            ?? throw new InvalidOperationException("Telegram chat ID not configured");
+        var chatId = Environment.GetEnvironmentVariable(chatIdVariable)
+            ?? throw new InvalidOperationException($"Telegram chat ID not configured ({chatIdVariable})");
 
         return (new TelegramBotClient(botToken), chatId);
     }

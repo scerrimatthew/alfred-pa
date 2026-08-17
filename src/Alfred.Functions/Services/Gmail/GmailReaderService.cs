@@ -22,6 +22,7 @@ public partial class GmailReaderService : IGmailReaderService
     private readonly IStateService _stateService;
     private readonly IPdfExtractorService _pdfExtractor;
     private readonly ILogger<GmailReaderService> _logger;
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, string> _labelIdCache = new();
 
     public GmailReaderService(
         IOptions<AlfredOptions> alfredOptions,
@@ -39,36 +40,74 @@ public partial class GmailReaderService : IGmailReaderService
 
     public async Task<List<SchoolEmail>> GetNewEmailsAsync()
     {
+        var afterEpoch = DateTimeOffset.UtcNow.AddHours(-_alfredOptions.LookbackHours).ToUnixTimeSeconds();
+        var query = $"is:unread from:{_alfredOptions.SchoolEmailSender} after:{afterEpoch}";
+
+        return await FetchNewEmailsAsync(
+            query,
+            _stateService.IsEmailProcessedAsync,
+            downloadLinkedDocuments: true,
+            label: "school");
+    }
+
+    public async Task<List<SchoolEmail>> GetNewPersonalEmailsAsync()
+    {
+        var lookbackHours = _alfredOptions.PersonalLookbackHours > 0
+            ? _alfredOptions.PersonalLookbackHours
+            : _alfredOptions.LookbackHours;
+        var afterEpoch = DateTimeOffset.UtcNow.AddHours(-lookbackHours).ToUnixTimeSeconds();
+        // Everything unread in the inbox except school mail; promotions/social tabs are noise not worth a Claude call
+        var query = $"is:unread in:inbox -from:{_alfredOptions.SchoolEmailSender} -category:promotions -category:social after:{afterEpoch}";
+
+        return await FetchNewEmailsAsync(
+            query,
+            _stateService.IsPersonalEmailProcessedAsync,
+            downloadLinkedDocuments: false,
+            label: "personal");
+    }
+
+    private async Task<List<SchoolEmail>> FetchNewEmailsAsync(
+        string query, Func<string, Task<bool>> isProcessed, bool downloadLinkedDocuments, string label)
+    {
+        const int maxTotalMessages = 300;
+
         var gmailService = CreateGmailService();
         var newEmails = new List<SchoolEmail>();
 
-        var afterEpoch = DateTimeOffset.UtcNow.AddHours(-_alfredOptions.LookbackHours).ToUnixTimeSeconds();
-        var query = $"from:{_alfredOptions.SchoolEmailSender} after:{afterEpoch}";
-
         _logger.LogInformation("Querying Gmail: {Query}", query);
 
-        var request = gmailService.Users.Messages.List("me");
-        request.Q = query;
-        request.MaxResults = 50;
-
-        var response = await request.ExecuteAsync();
-
-        if (response.Messages is null || response.Messages.Count == 0)
+        var messageRefs = new List<Message>();
+        string? pageToken = null;
+        do
         {
-            _logger.LogInformation("No school emails found in the lookback window");
+            var request = gmailService.Users.Messages.List("me");
+            request.Q = query;
+            request.MaxResults = 50;
+            request.PageToken = pageToken;
+
+            var response = await request.ExecuteAsync();
+            if (response.Messages is not null)
+                messageRefs.AddRange(response.Messages);
+
+            pageToken = response.NextPageToken;
+        } while (pageToken is not null && messageRefs.Count < maxTotalMessages);
+
+        if (messageRefs.Count == 0)
+        {
+            _logger.LogInformation("No {Label} emails found in the lookback window", label);
             return newEmails;
         }
 
-        foreach (var messageRef in response.Messages)
+        foreach (var messageRef in messageRefs)
         {
-            if (await _stateService.IsEmailProcessedAsync(messageRef.Id))
+            if (await isProcessed(messageRef.Id))
             {
                 _logger.LogDebug("Skipping already-processed email {MessageId}", messageRef.Id);
                 continue;
             }
 
             var fullMessage = await gmailService.Users.Messages.Get("me", messageRef.Id).ExecuteAsync();
-            var schoolEmail = await ParseMessageAsync(gmailService, fullMessage);
+            var schoolEmail = await ParseMessageAsync(gmailService, fullMessage, downloadLinkedDocuments);
 
             if (schoolEmail is not null)
             {
@@ -76,12 +115,101 @@ public partial class GmailReaderService : IGmailReaderService
             }
         }
 
-        _logger.LogInformation("Found {Count} new school emails to process", newEmails.Count);
+        _logger.LogInformation("Found {Count} new {Label} emails to process", newEmails.Count, label);
         newEmails.Reverse(); // Process oldest first
         return newEmails;
     }
 
-    private async Task<SchoolEmail?> ParseMessageAsync(GmailService gmailService, Message message)
+    public async Task MarkAsReadAndLabelAsync(string messageId, string labelPath)
+    {
+        try
+        {
+            var gmailService = CreateGmailService();
+            var labelId = await GetOrCreateLabelIdAsync(gmailService, labelPath);
+
+            var request = new ModifyMessageRequest
+            {
+                AddLabelIds = [labelId],
+                RemoveLabelIds = ["UNREAD"]
+            };
+
+            await gmailService.Users.Messages.Modify(request, "me", messageId).ExecuteAsync();
+            _logger.LogInformation("Marked {MessageId} as read and labeled {Label}", messageId, labelPath);
+        }
+        catch (Exception ex)
+        {
+            // Best-effort — the ProcessedEmails table already prevents reprocessing,
+            // so a failure here only leaves the email unread/unlabeled in Gmail
+            _logger.LogWarning(ex, "Failed to mark {MessageId} as read / apply label {Label}", messageId, labelPath);
+        }
+    }
+
+    public async Task MarkAsUnreadAsync(string messageId)
+    {
+        var gmailService = CreateGmailService();
+        var request = new ModifyMessageRequest { AddLabelIds = ["UNREAD"] };
+        await gmailService.Users.Messages.Modify(request, "me", messageId).ExecuteAsync();
+        _logger.LogInformation("Marked {MessageId} as unread", messageId);
+    }
+
+    public async Task RecategorizeAsync(string messageId, string newLabelPath)
+    {
+        var gmailService = CreateGmailService();
+
+        // Find existing Alfred labels on the message so they can be swapped out
+        var message = await gmailService.Users.Messages.Get("me", messageId).ExecuteAsync();
+        var allLabels = await gmailService.Users.Labels.List("me").ExecuteAsync();
+        var alfredLabelIds = (allLabels.Labels ?? [])
+            .Where(l => l.Name.StartsWith($"{LabelNames.Root}/", StringComparison.Ordinal))
+            .Select(l => l.Id)
+            .Where(id => message.LabelIds?.Contains(id) == true)
+            .ToList();
+
+        var newLabelId = await GetOrCreateLabelIdAsync(gmailService, newLabelPath);
+        var request = new ModifyMessageRequest
+        {
+            AddLabelIds = [newLabelId],
+            RemoveLabelIds = alfredLabelIds.Where(id => id != newLabelId).ToList()
+        };
+
+        await gmailService.Users.Messages.Modify(request, "me", messageId).ExecuteAsync();
+        _logger.LogInformation("Recategorized {MessageId} to {Label}", messageId, newLabelPath);
+    }
+
+    private async Task<string> GetOrCreateLabelIdAsync(GmailService gmailService, string labelPath)
+    {
+        if (_labelIdCache.TryGetValue(labelPath, out var cachedId))
+            return cachedId;
+
+        var existing = await gmailService.Users.Labels.List("me").ExecuteAsync();
+        foreach (var label in existing.Labels ?? [])
+        {
+            _labelIdCache[label.Name] = label.Id;
+        }
+
+        // Create the label and any missing ancestors (Gmail nests labels by "/" only
+        // when the parent label exists)
+        var segments = labelPath.Split('/');
+        for (var i = 1; i <= segments.Length; i++)
+        {
+            var path = string.Join('/', segments[..i]);
+            if (_labelIdCache.ContainsKey(path))
+                continue;
+
+            var created = await gmailService.Users.Labels.Create(new Label
+            {
+                Name = path,
+                LabelListVisibility = "labelShow",
+                MessageListVisibility = "show"
+            }, "me").ExecuteAsync();
+
+            _labelIdCache[path] = created.Id;
+        }
+
+        return _labelIdCache[labelPath];
+    }
+
+    private async Task<SchoolEmail?> ParseMessageAsync(GmailService gmailService, Message message, bool downloadLinkedDocuments)
     {
         try
         {
@@ -95,13 +223,17 @@ public partial class GmailReaderService : IGmailReaderService
                 ? DateTimeOffset.TryParse(dateHeader, out var parsed) ? parsed : DateTimeOffset.UtcNow
                 : DateTimeOffset.UtcNow;
 
-            var rawHtml = ExtractRawHtml(message.Payload);
-            var linkUrls = rawHtml is not null ? ExtractLinks(rawHtml) : [];
             var body = ExtractBody(message.Payload);
 
             var documents = new List<LinkedDocument>();
             documents.AddRange(await ExtractEmailAttachmentsAsync(gmailService, message));
-            documents.AddRange(await DownloadLinkedDocumentsAsync(linkUrls));
+
+            if (downloadLinkedDocuments)
+            {
+                var rawHtml = ExtractRawHtml(message.Payload);
+                var linkUrls = rawHtml is not null ? ExtractLinks(rawHtml) : [];
+                documents.AddRange(await DownloadLinkedDocumentsAsync(linkUrls));
+            }
 
             return new SchoolEmail
             {
@@ -384,7 +516,7 @@ public partial class GmailReaderService : IGmailReaderService
                 ClientId = _googleOptions.ClientId,
                 ClientSecret = _googleOptions.ClientSecret
             },
-            Scopes = [GmailService.Scope.GmailReadonly]
+            Scopes = [GmailService.Scope.GmailModify]
         });
 
         var credential = new UserCredential(flow, "user", new TokenResponse

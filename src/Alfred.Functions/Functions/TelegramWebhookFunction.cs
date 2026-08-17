@@ -1,7 +1,9 @@
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using Alfred.Functions.Configuration;
 using Alfred.Functions.Services.AI;
 using Alfred.Functions.Services.Calendar;
+using Alfred.Functions.Services.Gmail;
 using Alfred.Functions.Services.Notifications;
 using Alfred.Functions.Services.State;
 using Microsoft.Azure.Functions.Worker;
@@ -17,6 +19,7 @@ public class TelegramWebhookFunction
     private readonly ICalendarService _calendarService;
     private readonly ISummarizerService _summarizerService;
     private readonly INotificationService _notificationService;
+    private readonly IGmailReaderService _gmailReader;
     private readonly AlfredOptions _options;
     private readonly ILogger<TelegramWebhookFunction> _logger;
 
@@ -25,6 +28,7 @@ public class TelegramWebhookFunction
         ICalendarService calendarService,
         ISummarizerService summarizerService,
         INotificationService notificationService,
+        IGmailReaderService gmailReader,
         IOptions<AlfredOptions> options,
         ILogger<TelegramWebhookFunction> logger)
     {
@@ -32,6 +36,7 @@ public class TelegramWebhookFunction
         _calendarService = calendarService;
         _summarizerService = summarizerService;
         _notificationService = notificationService;
+        _gmailReader = gmailReader;
         _options = options.Value;
         _logger = logger;
     }
@@ -85,15 +90,38 @@ public class TelegramWebhookFunction
             var emailsTask = _stateService.GetEmailsSinceAsync(lookbackSince);
             var eventsTask = _calendarService.GetUpcomingEventsAsync(_options.ChatLookbackDays);
 
-            await Task.WhenAll(emailsTask, eventsTask);
+            // The personal DM gets personal context and email tools on top of the school context;
+            // the shared school chat stays school-only
+            var isPersonalChat = chatId.ToString() == _options.PersonalTelegramChatId.Trim();
 
-            var recentEmails = emailsTask.Result;
-            var upcomingEvents = eventsTask.Result;
+            string answer;
+            if (isPersonalChat)
+            {
+                var personalEmailsTask = _stateService.GetPersonalEmailsSinceAsync(lookbackSince);
+                var personalActionsTask = _calendarService.GetUpcomingPersonalEventsAsync(_options.ChatLookbackDays);
 
-            _logger.LogInformation("Context loaded: {EmailCount} emails, {EventCount} events",
-                recentEmails.Count, upcomingEvents.Count);
+                await Task.WhenAll(emailsTask, eventsTask, personalEmailsTask, personalActionsTask);
 
-            var answer = await _summarizerService.AnswerQuestionAsync(question, recentEmails, upcomingEvents);
+                _logger.LogInformation("Personal context loaded: {School} school + {Personal} personal emails, {Actions} actions",
+                    emailsTask.Result.Count, personalEmailsTask.Result.Count, personalActionsTask.Result.Count);
+
+                answer = await _summarizerService.AnswerPersonalQuestionAsync(
+                    question,
+                    emailsTask.Result,
+                    eventsTask.Result,
+                    personalEmailsTask.Result,
+                    personalActionsTask.Result,
+                    ExecuteEmailToolAsync);
+            }
+            else
+            {
+                await Task.WhenAll(emailsTask, eventsTask);
+
+                _logger.LogInformation("Context loaded: {EmailCount} emails, {EventCount} events",
+                    emailsTask.Result.Count, eventsTask.Result.Count);
+
+                answer = await _summarizerService.AnswerQuestionAsync(question, emailsTask.Result, eventsTask.Result);
+            }
 
             await _notificationService.SendMessageAsync(chatId, answer);
         }
@@ -104,6 +132,72 @@ public class TelegramWebhookFunction
 
         // Always return 200 to Telegram to prevent retries
         return req.CreateResponse(System.Net.HttpStatusCode.OK);
+    }
+
+    private async Task<string> ExecuteEmailToolAsync(string toolName, JsonNode? input)
+    {
+        switch (toolName)
+        {
+            case "mark_unread":
+            {
+                var messageId = input?["message_id"]?.GetValue<string>();
+                if (string.IsNullOrWhiteSpace(messageId))
+                    return "Error: no message_id provided.";
+
+                await _gmailReader.MarkAsUnreadAsync(messageId);
+                return "Email marked as unread.";
+            }
+
+            case "recategorize_email":
+            {
+                var messageId = input?["message_id"]?.GetValue<string>();
+                var category = input?["category"]?.GetValue<string>();
+                if (string.IsNullOrWhiteSpace(messageId) || string.IsNullOrWhiteSpace(category))
+                    return "Error: message_id and category are required.";
+
+                await _gmailReader.RecategorizeAsync(messageId, LabelNames.ForPersonal(category));
+                await _stateService.UpdatePersonalEmailCategoryAsync(messageId, category);
+                return $"Email recategorized to {category}.";
+            }
+
+            case "add_suppression_rule":
+            {
+                var pattern = input?["pattern"]?.GetValue<string>();
+                if (string.IsNullOrWhiteSpace(pattern))
+                    return "Error: no pattern provided.";
+
+                var ruleId = Guid.NewGuid().ToString("N")[..8];
+                await _stateService.SaveSuppressionRuleAsync(
+                    ruleId,
+                    pattern,
+                    input?["example_sender"]?.GetValue<string>(),
+                    input?["example_subject"]?.GetValue<string>());
+                return $"Suppression rule {ruleId} saved: {pattern}";
+            }
+
+            case "list_suppression_rules":
+            {
+                var rules = await _stateService.GetSuppressionRulesAsync();
+                if (rules.Count == 0)
+                    return "No suppression rules are active.";
+
+                return string.Join("\n", rules.OrderBy(r => r.CreatedAt).Select(r =>
+                    $"[{r.RowKey}] {r.Pattern} (added {r.CreatedAt:d MMM yyyy})"));
+            }
+
+            case "remove_suppression_rule":
+            {
+                var ruleId = input?["rule_id"]?.GetValue<string>();
+                if (string.IsNullOrWhiteSpace(ruleId))
+                    return "Error: no rule_id provided.";
+
+                await _stateService.DeleteSuppressionRuleAsync(ruleId);
+                return $"Suppression rule {ruleId} removed.";
+            }
+
+            default:
+                return $"Error: unknown tool {toolName}.";
+        }
     }
 
     private bool IsUserAllowed(long userId)

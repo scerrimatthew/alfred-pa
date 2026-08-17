@@ -1,3 +1,5 @@
+using System.Globalization;
+
 namespace Alfred.Functions.Configuration;
 
 public class AlfredOptions
@@ -13,6 +15,43 @@ public class AlfredOptions
     public string TelegramWebhookSecret { get; set; } = string.Empty;
     public int ChatLookbackDays { get; set; } = 30;
     public string AllowedTelegramUserIds { get; set; } = string.Empty;
+    public string PersonalTelegramChatId { get; set; } = string.Empty;
+    public bool NotifyAllPersonalEmails { get; set; } = false;
+    public string PersonalCalendarId { get; set; } = "primary";
+    public int PersonalLookbackHours { get; set; } = 0; // 0 = use LookbackHours
+    public int PersonalDigestDaysAhead { get; set; } = 7;
+
+    // Summer break window (MM-dd, inclusive, Malta time). Evening digests pause during
+    // this window; school emails alert immediately instead. Empty string disables the pause.
+    public string SummerBreakStart { get; set; } = "07-01";
+    public string SummerBreakEnd { get; set; } = "09-20";
+
+    public bool IsInSummerBreak(DateTime maltaDate)
+    {
+        if (!TryParseMonthDay(SummerBreakStart, out var startMonth, out var startDay) ||
+            !TryParseMonthDay(SummerBreakEnd, out var endMonth, out var endDay))
+        {
+            return false;
+        }
+
+        var start = new DateTime(maltaDate.Year, startMonth, startDay);
+        var end = new DateTime(maltaDate.Year, endMonth, endDay);
+        return maltaDate.Date >= start && maltaDate.Date <= end;
+    }
+
+    private static bool TryParseMonthDay(string value, out int month, out int day)
+    {
+        if (DateTime.TryParseExact(value, "MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out var parsed))
+        {
+            month = parsed.Month;
+            day = parsed.Day;
+            return true;
+        }
+
+        month = 0;
+        day = 0;
+        return false;
+    }
 }
 
 public class GoogleOptions

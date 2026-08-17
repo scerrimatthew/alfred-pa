@@ -1,6 +1,9 @@
 # Alfred - Personal Assistant
 
-Azure Functions app that monitors a school email inbox (Sacred Heart College, Malta), uses Claude AI to summarize emails, sends Telegram notifications, creates Google Calendar events, delivers a daily evening digest, and provides a Telegram chat Q&A interface.
+Azure Functions app that monitors a Gmail inbox, uses Claude AI to summarize emails, sends Telegram notifications, creates Google Calendar events, delivers a daily evening digest, and provides a Telegram chat Q&A interface. It has two monitoring pipelines:
+
+- **School** (Sacred Heart College, Malta): summarizes school emails, creates calendar events, evening digest, Q&A — all in the school Telegram chat
+- **Personal**: triages all other inbox email, notifying a separate personal Telegram chat about emails that warrant attention (invoices, payment requests, personal replies, official/security notifications)
 
 ## Architecture
 
@@ -13,8 +16,9 @@ Azure Functions app that monitors a school email inbox (Sacred Heart College, Ma
 ```
 src/Alfred.Functions/
   Functions/
-    EmailMonitorFunction.cs    # Timer (every 15 min) — checks Gmail, summarizes new emails, sends alerts
-    EveningDigestFunction.cs   # Timer (2 PM UTC / 4 PM CEST) — daily summary of emails + upcoming events
+    EmailMonitorFunction.cs         # Timer (every 15 min) — checks Gmail for school emails, summarizes, sends alerts
+    PersonalEmailMonitorFunction.cs # Timer (every 15 min, offset :05) — triages non-school inbox email, alerts personal chat
+    EveningDigestFunction.cs        # Timer (2 PM UTC / 4 PM CEST) — daily summary of school emails + upcoming events
     TelegramWebhookFunction.cs # HTTP POST — receives Telegram messages, answers questions via Claude
   Services/
     AI/                        # Claude API integration for email summarization, digest generation, and Q&A
@@ -37,8 +41,15 @@ tools/
 | `Alfred__LookbackHours` | How far back to query Gmail (default: 25h) |
 | `Alfred__SchoolEmailSender` | Email address to filter on |
 | `Alfred__SharedCalendarId` | Google Calendar ID for school events |
-| `Alfred__TelegramChatId` | Telegram chat to send notifications to |
+| `Alfred__TelegramChatId` | Telegram chat for school notifications |
+| `Alfred__PersonalTelegramChatId` | Telegram chat for personal inbox notifications (empty = personal monitor disabled) |
+| `Alfred__NotifyAllPersonalEmails` | `true` = notify for every personal email, not just attention-worthy ones (default: false) |
+| `Alfred__PersonalCalendarId` | Calendar for personal actions/deadlines (default: `primary`) |
+| `Alfred__PersonalLookbackHours` | Override lookback for the personal monitor only; 0 = use `LookbackHours`. Set high temporarily to sweep a backlog |
+| `Alfred__PersonalDigestDaysAhead` | Days of upcoming personal actions in the personal digest (default: 7) |
 | `Alfred__SchoolDaysAhead` | Days ahead to include in evening digest |
+| `Alfred__SummerBreakStart` | Start of summer break, MM-dd inclusive, Malta time (default: 07-01) |
+| `Alfred__SummerBreakEnd` | End of summer break, MM-dd inclusive (default: 09-20). Digests pause during the break; school emails alert immediately instead. Empty = no pause |
 | `Alfred__TelegramWebhookSecret` | Secret token in webhook URL for Telegram bot |
 | `Alfred__AllowedTelegramUserIds` | Comma-separated Telegram user IDs allowed to chat (empty = all) |
 | `Alfred__ChatLookbackDays` | How far back to search emails for chat context (default: 30) |
@@ -48,13 +59,17 @@ tools/
 
 ## How It Works
 
-1. **EmailMonitor** runs every 15 minutes, queries Gmail for emails from the configured sender within the lookback window
+1. **EmailMonitor** runs every 15 minutes, queries Gmail for **unread** emails from the configured sender within the lookback window
 2. Already-processed emails are skipped via `ProcessedEmails` table in Azure Table Storage (keyed by Gmail message ID)
-3. New emails are sent to Claude for summarization — extracting action items, homework, and calendar events
+3. New emails are sent to Claude for summarization — extracting action items, homework, calendar events, and a category
 4. Calendar events are created in Google Calendar (deduplicated via `CalendarEvents` table)
-5. A Telegram notification is sent immediately for each new email
-6. **EveningDigest** runs daily at 4 PM Malta time, compiling all recent emails and upcoming calendar events into a single digest message
-7. **TelegramWebhook** receives messages sent to the bot, loads 30 days of email summaries and 30 school days of calendar events, sends the question + context to Claude, and replies in the chat. Access is controlled via `AllowedTelegramUserIds`
+5. A Telegram notification is sent immediately for each new email; the email is then marked read in Gmail and labeled `Alfred/School/<Category>` (weekly-plan, homework, event, outing, meeting, newsletter, admin, other)
+6. **PersonalEmailMonitor** runs every 15 minutes (offset :05), queries the inbox for **unread** email from anyone *except* the school sender (skipping the promotions/social Gmail tabs), has Claude triage each email, and sends a notification to the personal Telegram chat for attention-worthy emails (invoices, payment requests, personal replies, appointments, security/official notifications). Others are marked processed silently. Dated actions found during triage (payment deadlines, appointments) become events on the personal calendar, tagged with a private `alfred=true` extended property for later filtering. Every processed email is marked read and labeled `Alfred/Personal/<Category>`. Personal emails use the `personal` partition in `ProcessedEmails`, so they never appear in the school digest or Q&A. The function is disabled until `Alfred__PersonalTelegramChatId` is set
+7. **EveningDigest** runs daily at 4 PM Malta time and sends two independent digests: the **school digest** (school chat — recent school emails + upcoming events) and the **personal digest** (personal chat — today's personal emails + Alfred-created actions/deadlines over the next `PersonalDigestDaysAhead` days). During the summer break window (`SummerBreakStart`–`SummerBreakEnd`) the school digest is skipped; to compensate, EmailMonitor sends an immediate alert for **every** school email during the break (not just urgent ones). The personal digest runs year-round
+8. **TelegramWebhook** receives messages sent to the bot and answers via Claude. In the shared school chat it loads 30 days of school email summaries plus calendar events (school scope only). In the personal DM (`chat id == PersonalTelegramChatId`) it additionally loads personal email summaries and Alfred-created personal calendar actions, and Claude can execute actions via tool use: `mark_unread`, `recategorize_email` (swaps the `Alfred/Personal/*` label and updates state), and `add/list/remove_suppression_rule`. Access is controlled via `AllowedTelegramUserIds`
+9. **Suppression rules** ("ignore these Bolt reports in future") are stored in the `SuppressionRules` table as generalized natural-language patterns written by Claude from the user's request. Each personal triage pass receives the active rules and matches them by reasoning (a rule about the July edition of a monthly report matches the August one too). Suppressed emails are still marked read, labeled, and recorded in state (`Suppressed = true`), but never notify, never create calendar events, and are excluded from the personal digest
+
+Because the monitors only see unread email, an email read manually before the next poll is never processed. Marking read / labeling is best-effort: if it fails, the state table still prevents reprocessing. Gmail labels are created automatically on first use. Requires the `gmail.modify` OAuth scope — refresh tokens issued for the old read-only scope must be regenerated with `tools/GetGoogleRefreshToken`
 
 ## Deployment
 

@@ -33,7 +33,13 @@ public class GoogleCalendarService : ICalendarService
         _logger = logger;
     }
 
-    public async Task ProcessEventsAsync(List<CalendarEventInfo> events, string emailId)
+    public Task ProcessEventsAsync(List<CalendarEventInfo> events, string emailId) =>
+        ProcessEventsCoreAsync(events, emailId, _alfredOptions.SharedCalendarId, tagAsAlfred: false);
+
+    public Task ProcessPersonalEventsAsync(List<CalendarEventInfo> events, string emailId) =>
+        ProcessEventsCoreAsync(events, emailId, _alfredOptions.PersonalCalendarId, tagAsAlfred: true);
+
+    private async Task ProcessEventsCoreAsync(List<CalendarEventInfo> events, string emailId, string calendarId, bool tagAsAlfred)
     {
         if (events.Count == 0) return;
 
@@ -47,13 +53,13 @@ public class GoogleCalendarService : ICalendarService
             switch (eventInfo.Action)
             {
                 case CalendarEventAction.Create:
-                    await CreateEventAsync(calendarService, eventInfo, emailId);
+                    await CreateEventAsync(calendarService, eventInfo, emailId, calendarId, tagAsAlfred);
                     break;
                 case CalendarEventAction.Update:
-                    await UpdateEventAsync(calendarService, eventInfo, emailId);
+                    await UpdateEventAsync(calendarService, eventInfo, emailId, calendarId, tagAsAlfred);
                     break;
                 case CalendarEventAction.Delete:
-                    await DeleteEventAsync(calendarService, eventInfo);
+                    await DeleteEventAsync(calendarService, eventInfo, calendarId);
                     break;
             }
         }
@@ -76,7 +82,25 @@ public class GoogleCalendarService : ICalendarService
         return response.Items?.ToList() ?? [];
     }
 
-    private async Task CreateEventAsync(CalendarService calendarService, CalendarEventInfo eventInfo, string emailId)
+    public async Task<List<Event>> GetUpcomingPersonalEventsAsync(int daysAhead)
+    {
+        var calendarService = CreateCalendarService();
+        var now = DateTime.Now;
+
+        var request = calendarService.Events.List(_alfredOptions.PersonalCalendarId);
+        request.TimeMinDateTimeOffset = new DateTimeOffset(now);
+        request.TimeMaxDateTimeOffset = new DateTimeOffset(now.AddDays(daysAhead));
+        request.OrderBy = EventsResource.ListRequest.OrderByEnum.StartTime;
+        request.SingleEvents = true;
+        request.MaxResults = 50;
+        // Only events Alfred created (tagged at creation) — not the user's own appointments
+        request.PrivateExtendedProperty = new Google.Apis.Util.Repeatable<string>(["alfred=true"]);
+
+        var response = await request.ExecuteAsync();
+        return response.Items?.ToList() ?? [];
+    }
+
+    private async Task CreateEventAsync(CalendarService calendarService, CalendarEventInfo eventInfo, string emailId, string calendarId, bool tagAsAlfred)
     {
         // Check state table first
         var existing = await _stateService.GetCalendarEventMappingAsync(eventInfo.SubjectHash!);
@@ -87,16 +111,16 @@ public class GoogleCalendarService : ICalendarService
         }
 
         // Check Google Calendar directly for duplicates on the same date
-        if (await HasExistingCalendarEventAsync(calendarService, eventInfo))
+        if (await HasExistingCalendarEventAsync(calendarService, eventInfo, calendarId))
         {
             _logger.LogInformation("Similar calendar event already exists on {Date} for {Title}, skipping",
                 eventInfo.Date, eventInfo.Title);
             return;
         }
 
-        var calendarEvent = BuildCalendarEvent(eventInfo);
+        var calendarEvent = BuildCalendarEvent(eventInfo, tagAsAlfred);
         var created = await calendarService.Events
-            .Insert(calendarEvent, _alfredOptions.SharedCalendarId)
+            .Insert(calendarEvent, calendarId)
             .ExecuteAsync();
 
         await _stateService.SaveCalendarEventMappingAsync(
@@ -106,10 +130,10 @@ public class GoogleCalendarService : ICalendarService
         _logger.LogInformation("Created calendar event: {Title} on {Date}", eventInfo.Title, eventInfo.Date);
     }
 
-    private async Task<bool> HasExistingCalendarEventAsync(CalendarService calendarService, CalendarEventInfo eventInfo)
+    private async Task<bool> HasExistingCalendarEventAsync(CalendarService calendarService, CalendarEventInfo eventInfo, string calendarId)
     {
         // Check the target date plus 1 day on either side to catch off-by-one date errors
-        var request = calendarService.Events.List(_alfredOptions.SharedCalendarId);
+        var request = calendarService.Events.List(calendarId);
         request.TimeMinDateTimeOffset = new DateTimeOffset(eventInfo.Date.AddDays(-1));
         request.TimeMaxDateTimeOffset = new DateTimeOffset(eventInfo.Date.AddDays(2));
         request.SingleEvents = true;
@@ -148,19 +172,19 @@ public class GoogleCalendarService : ICalendarService
         return words;
     }
 
-    private async Task UpdateEventAsync(CalendarService calendarService, CalendarEventInfo eventInfo, string emailId)
+    private async Task UpdateEventAsync(CalendarService calendarService, CalendarEventInfo eventInfo, string emailId, string calendarId, bool tagAsAlfred)
     {
         var existing = await _stateService.GetCalendarEventMappingAsync(eventInfo.SubjectHash!);
         if (existing is null)
         {
             _logger.LogInformation("No existing event found for update, creating instead: {Title}", eventInfo.Title);
-            await CreateEventAsync(calendarService, eventInfo, emailId);
+            await CreateEventAsync(calendarService, eventInfo, emailId, calendarId, tagAsAlfred);
             return;
         }
 
-        var calendarEvent = BuildCalendarEvent(eventInfo);
+        var calendarEvent = BuildCalendarEvent(eventInfo, tagAsAlfred);
         await calendarService.Events
-            .Update(calendarEvent, _alfredOptions.SharedCalendarId, existing.GoogleEventId)
+            .Update(calendarEvent, calendarId, existing.GoogleEventId)
             .ExecuteAsync();
 
         await _stateService.SaveCalendarEventMappingAsync(
@@ -170,7 +194,7 @@ public class GoogleCalendarService : ICalendarService
         _logger.LogInformation("Updated calendar event: {Title}", eventInfo.Title);
     }
 
-    private async Task DeleteEventAsync(CalendarService calendarService, CalendarEventInfo eventInfo)
+    private async Task DeleteEventAsync(CalendarService calendarService, CalendarEventInfo eventInfo, string calendarId)
     {
         var existing = await _stateService.GetCalendarEventMappingAsync(eventInfo.SubjectHash!);
         if (existing is null)
@@ -180,7 +204,7 @@ public class GoogleCalendarService : ICalendarService
         }
 
         await calendarService.Events
-            .Delete(_alfredOptions.SharedCalendarId, existing.GoogleEventId)
+            .Delete(calendarId, existing.GoogleEventId)
             .ExecuteAsync();
 
         await _stateService.DeleteCalendarEventMappingAsync(eventInfo.SubjectHash!);
@@ -188,13 +212,22 @@ public class GoogleCalendarService : ICalendarService
         _logger.LogInformation("Deleted calendar event: {Title}", eventInfo.Title);
     }
 
-    private static Event BuildCalendarEvent(CalendarEventInfo eventInfo)
+    private static Event BuildCalendarEvent(CalendarEventInfo eventInfo, bool tagAsAlfred)
     {
         var calendarEvent = new Event
         {
             Summary = eventInfo.Title,
             Description = eventInfo.Description,
         };
+
+        if (tagAsAlfred)
+        {
+            // Lets GetUpcomingPersonalEventsAsync filter Alfred-created events from the user's own
+            calendarEvent.ExtendedProperties = new Event.ExtendedPropertiesData
+            {
+                Private__ = new Dictionary<string, string> { ["alfred"] = "true" }
+            };
+        }
 
         if (eventInfo.IsAllDay)
         {

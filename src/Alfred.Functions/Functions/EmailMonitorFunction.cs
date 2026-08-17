@@ -1,3 +1,4 @@
+using Alfred.Functions.Configuration;
 using Alfred.Functions.Services.AI;
 using Alfred.Functions.Services.Calendar;
 using Alfred.Functions.Services.Gmail;
@@ -5,6 +6,7 @@ using Alfred.Functions.Services.Notifications;
 using Alfred.Functions.Services.State;
 using Microsoft.Azure.Functions.Worker;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 
 namespace Alfred.Functions.Functions;
 
@@ -15,6 +17,7 @@ public class EmailMonitorFunction
     private readonly ICalendarService _calendarService;
     private readonly INotificationService _notificationService;
     private readonly IStateService _stateService;
+    private readonly AlfredOptions _options;
     private readonly ILogger<EmailMonitorFunction> _logger;
 
     public EmailMonitorFunction(
@@ -23,6 +26,7 @@ public class EmailMonitorFunction
         ICalendarService calendarService,
         INotificationService notificationService,
         IStateService stateService,
+        IOptions<AlfredOptions> options,
         ILogger<EmailMonitorFunction> logger)
     {
         _gmailReader = gmailReader;
@@ -30,6 +34,7 @@ public class EmailMonitorFunction
         _calendarService = calendarService;
         _notificationService = notificationService;
         _stateService = stateService;
+        _options = options.Value;
         _logger = logger;
     }
 
@@ -48,6 +53,12 @@ public class EmailMonitorFunction
                 return;
             }
 
+            // During summer break the evening digest is paused, so every school email
+            // must alert immediately or it would never be seen
+            var maltaTz = TimeZoneInfo.FindSystemTimeZoneById("Europe/Malta");
+            var todayMalta = TimeZoneInfo.ConvertTime(DateTimeOffset.UtcNow, maltaTz).Date;
+            var inSummerBreak = _options.IsInSummerBreak(todayMalta);
+
             foreach (var email in newEmails)
             {
                 try
@@ -58,7 +69,7 @@ public class EmailMonitorFunction
 
                     await _calendarService.ProcessEventsAsync(digest.CalendarEvents, email.MessageId);
 
-                    if (digest.RequiresImmediateAlert)
+                    if (digest.RequiresImmediateAlert || inSummerBreak)
                     {
                         await _notificationService.SendAlertAsync(digest.TelegramMessage);
                     }
@@ -68,7 +79,9 @@ public class EmailMonitorFunction
                     }
 
                     await _stateService.MarkEmailProcessedAsync(
-                        email.MessageId, email.Subject, email.SenderName, digest.TelegramMessage, digest.Homework);
+                        email.MessageId, email.Subject, email.SenderName, digest.TelegramMessage, digest.Homework, digest.Category);
+
+                    await _gmailReader.MarkAsReadAndLabelAsync(email.MessageId, LabelNames.ForSchool(digest.Category));
 
                     _logger.LogInformation("Successfully processed email: {Subject}", email.Subject);
                 }

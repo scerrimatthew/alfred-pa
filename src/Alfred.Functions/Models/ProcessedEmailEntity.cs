@@ -15,4 +15,6 @@ public class ProcessedEmailEntity : ITableEntity
     public string Summary { get; set; } = string.Empty;
     public string SenderName { get; set; } = string.Empty;
     public string? Homework { get; set; }
+    public string? Category { get; set; }
+    public bool Suppressed { get; set; }
 }
