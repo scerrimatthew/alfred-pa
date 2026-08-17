@@ -156,11 +156,13 @@ public partial class GmailReaderService : IGmailReaderService
     {
         var gmailService = CreateGmailService();
 
-        // Find existing Alfred labels on the message so they can be swapped out
+        // Find existing Alfred-applied labels on the message so they can be swapped out:
+        // bare personal category names, plus legacy Alfred/* paths
         var message = await gmailService.Users.Messages.Get("me", messageId).ExecuteAsync();
         var allLabels = await gmailService.Users.Labels.List("me").ExecuteAsync();
         var alfredLabelIds = (allLabels.Labels ?? [])
-            .Where(l => l.Name.StartsWith($"{LabelNames.Root}/", StringComparison.Ordinal))
+            .Where(l => l.Name.StartsWith($"{LabelNames.Root}/", StringComparison.Ordinal)
+                || LabelNames.PersonalCategoryLabels.Contains(l.Name))
             .Select(l => l.Id)
             .Where(id => message.LabelIds?.Contains(id) == true)
             .ToList();
