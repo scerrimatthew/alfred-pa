@@ -35,6 +35,8 @@ src/Alfred.Functions/
 tools/
   GetGoogleRefreshToken/       # Utility to obtain Google OAuth refresh token
   TestHarness/                 # Local testing utility
+tests/
+  Alfred.Functions.Tests/      # Unit tests (xunit + NSubstitute + coverlet) — see "Testing & merge rules"
 ```
 
 ## Key App Settings
@@ -86,6 +88,27 @@ Sending `/evolve <instruction>` to the bot from the personal DM dispatches the `
 
 - Function app settings: `GitHub__Token` (fine-grained PAT with Actions read/write on this repo), `GitHub__Repo` (default: `scerrimatthew/alfred-pa`)
 - GitHub repo secrets: `ANTHROPIC_API_KEY`, `AZURE_FUNCTIONAPP_PUBLISH_PROFILE`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`
+
+## Testing & merge rules (orchestrator policy)
+
+Unit tests live in `tests/Alfred.Functions.Tests` (xunit + NSubstitute + coverlet). These rules bind every session working on this repo, including headless `/evolve` runs.
+
+**Separation of duties** — the following roles must be played by *separate agents* (subagents in an interactive session; the orchestrating session dispatches them and never blurs the roles):
+
+- **Coding agent** (primary): changes production code (`src/`, `tools/`, workflows). MUST NOT create, edit, or delete anything under `tests/`, and MUST NOT touch the coverage gate (threshold or include/exclude filters).
+- **Test-writer agent** (`.claude/agents/test-writer.md`): the only agent allowed to write under `tests/`. Never changes production code — if it needs a testability seam it reports back and the coding agent provides it.
+- **Adversarial reviewer** (`.claude/agents/adversarial-reviewer.md`): reviews every change set *before commit*, read-only, explicitly hunting for bugs and for rule violations (coding agent touching tests, threshold lowered, tests gamed). Findings must be fixed by the appropriate agent — or explicitly waived by Matthew — before the change lands.
+
+**Workflow for any change**: coding agent implements → if behavior changed or new logic needs coverage, dispatch the test-writer → run the coverage gate → adversarial review → commit only when the gate is green and the review verdict is APPROVE.
+
+**Coverage gate** — must pass before any commit, merge, or deploy:
+
+```powershell
+# Local (the system dotnet is .NET 10; use the local 8.0 SDK)
+& "$env:LOCALAPPDATA\Microsoft\dotnet\dotnet.exe" test tests/Alfred.Functions.Tests/Alfred.Functions.Tests.csproj /p:CollectCoverage=true
+```
+
+The line-coverage threshold lives in the test `.csproj` (`<Threshold>`). It is enforced in CI (`.github/workflows/ci.yml`, on push and PR) and in the `evolve` pipeline before commit/deploy. The threshold may be raised, never lowered, and coverage filters never loosened — except on Matthew's explicit instruction.
 
 ## Deployment
 
