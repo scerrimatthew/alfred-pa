@@ -120,6 +120,63 @@ public partial class GmailReaderService : IGmailReaderService
         return newEmails;
     }
 
+    public async Task<List<InboxSearchResult>> SearchInboxAsync(string query, int maxResults)
+    {
+        var gmailService = CreateGmailService();
+        var capped = Math.Clamp(maxResults, 1, 20);
+
+        _logger.LogInformation("On-demand inbox search: {Query} (max {Max})", query, capped);
+
+        var request = gmailService.Users.Messages.List("me");
+        request.Q = query;
+        request.MaxResults = capped;
+        var response = await request.ExecuteAsync();
+
+        var results = new List<InboxSearchResult>();
+        foreach (var messageRef in (response.Messages ?? []).Take(capped))
+        {
+            var getRequest = gmailService.Users.Messages.Get("me", messageRef.Id);
+            getRequest.Format = UsersResource.MessagesResource.GetRequest.FormatEnum.Metadata;
+            getRequest.MetadataHeaders = new Google.Apis.Util.Repeatable<string>(["Subject", "From", "Date"]);
+            var message = await getRequest.ExecuteAsync();
+
+            var headers = message.Payload?.Headers ?? [];
+            var from = headers.FirstOrDefault(h => h.Name == "From")?.Value ?? "";
+            var dateHeader = headers.FirstOrDefault(h => h.Name == "Date")?.Value;
+
+            results.Add(new InboxSearchResult
+            {
+                MessageId = message.Id,
+                ThreadId = message.ThreadId ?? message.Id,
+                Subject = headers.FirstOrDefault(h => h.Name == "Subject")?.Value ?? "(No subject)",
+                SenderName = ExtractSenderName(from),
+                SenderEmail = ExtractEmail(from),
+                ReceivedDate = dateHeader is not null && DateTimeOffset.TryParse(dateHeader, out var parsed)
+                    ? parsed
+                    : DateTimeOffset.UtcNow,
+                Snippet = System.Net.WebUtility.HtmlDecode(message.Snippet ?? "")
+            });
+        }
+
+        _logger.LogInformation("Inbox search returned {Count} results", results.Count);
+        return results;
+    }
+
+    public async Task<SchoolEmail?> GetEmailAsync(string messageId)
+    {
+        var gmailService = CreateGmailService();
+        try
+        {
+            var message = await gmailService.Users.Messages.Get("me", messageId).ExecuteAsync();
+            return await ParseMessageAsync(gmailService, message, downloadLinkedDocuments: false);
+        }
+        catch (Google.GoogleApiException ex) when (ex.HttpStatusCode == System.Net.HttpStatusCode.NotFound)
+        {
+            _logger.LogWarning("Email {MessageId} not found", messageId);
+            return null;
+        }
+    }
+
     public async Task MarkAsReadAndLabelAsync(string messageId, string labelPath)
     {
         try

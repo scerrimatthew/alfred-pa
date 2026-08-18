@@ -346,6 +346,18 @@ public class ClaudeSummarizerService : ISummarizerService
             follow-ups ("and what about Tuesday?", "delete that one"); if the new question
             stands on its own, answer it fresh and do not force a connection to earlier messages.
 
+            The email lists below only cover what Alfred has processed recently. If Matthew asks
+            about an email you don't see there (older than the window, read before Alfred saw it,
+            or missing detail like an amount), SEARCH the inbox directly:
+            - search_inbox: query Gmail with standard search syntax (from:, subject:,
+              after:2026/08/01, before:2026/08/02, has:attachment, "quoted phrases"). Start
+              specific; broaden if nothing matches.
+            - read_email: fetch one email's full body plus the text of its PDF attachments —
+              use it on the best match to pull out specifics (invoice amounts, due dates,
+              reference numbers).
+            Answer from the provided context first and only search when it can't answer the
+            question. Never invent an email you didn't find either way.
+
             You can also ACT on Matthew's personal emails when he asks:
             - mark_unread: mark an email as unread in Gmail (e.g. "mark that invoice as unread")
             - recategorize_email: change an email's category label (e.g. "that's not an invoice, it's a delivery")
@@ -474,6 +486,31 @@ public class ClaudeSummarizerService : ISummarizerService
                 }
                 """)),
             new Anthropic.SDK.Common.Function(
+                "search_inbox",
+                "Search Matthew's Gmail inbox directly, for emails the provided context doesn't cover. Uses standard Gmail query syntax. Returns matches with id, date, sender, subject, and a short snippet.",
+                System.Text.Json.Nodes.JsonNode.Parse("""
+                {
+                    "type": "object",
+                    "properties": {
+                        "query": { "type": "string", "description": "Gmail search query, e.g. \"from:go.com.mt after:2026/08/01 before:2026/08/02\" or \"invoice has:attachment\"" },
+                        "max_results": { "type": "integer", "description": "Max matches to return (default 10, cap 20)" }
+                    },
+                    "required": ["query"]
+                }
+                """)),
+            new Anthropic.SDK.Common.Function(
+                "read_email",
+                "Fetch one email's full body plus the extracted text of its PDF attachments. Use on a search_inbox match (or a known id) to read the details.",
+                System.Text.Json.Nodes.JsonNode.Parse("""
+                {
+                    "type": "object",
+                    "properties": {
+                        "message_id": { "type": "string", "description": "The Gmail message id (from id=...)" }
+                    },
+                    "required": ["message_id"]
+                }
+                """)),
+            new Anthropic.SDK.Common.Function(
                 "delete_calendar_event",
                 "Delete an Alfred-created reminder/event from Matthew's personal calendar.",
                 System.Text.Json.Nodes.JsonNode.Parse("""
@@ -498,7 +535,8 @@ public class ClaudeSummarizerService : ISummarizerService
             Tools = tools
         };
 
-        for (var iteration = 0; iteration < 5; iteration++)
+        // Enough room for a search -> refine -> read -> act -> answer chain
+        for (var iteration = 0; iteration < 8; iteration++)
         {
             var response = await client.Messages.GetClaudeMessageAsync(parameters);
 

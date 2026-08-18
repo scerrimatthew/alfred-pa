@@ -268,6 +268,50 @@ public class TelegramWebhookFunction
                 return $"Suppression rule {ruleId} removed.";
             }
 
+            case "search_inbox":
+            {
+                var query = input?["query"]?.GetValue<string>();
+                if (string.IsNullOrWhiteSpace(query))
+                    return "Error: no query provided.";
+
+                var maxResults = input?["max_results"]?.GetValue<int>() ?? 10;
+                var results = await _gmailReader.SearchInboxAsync(query, maxResults);
+                if (results.Count == 0)
+                    return "No emails matched that query.";
+
+                return string.Join("\n", results.Select(r =>
+                    $"- id={r.MessageId} [{r.ReceivedDate:ddd d MMM yyyy}] {r.SenderName} — {r.Subject}: {r.Snippet} link={GmailLinks.ForThread(r.ThreadId)}"));
+            }
+
+            case "read_email":
+            {
+                var messageId = input?["message_id"]?.GetValue<string>();
+                if (string.IsNullOrWhiteSpace(messageId))
+                    return "Error: no message_id provided.";
+
+                var email = await _gmailReader.GetEmailAsync(messageId);
+                if (email is null)
+                    return "Error: email not found.";
+
+                var body = email.Body.Length > 4000 ? email.Body[..4000] + "…" : email.Body;
+                var attachments = string.Concat(email.Documents
+                    .Where(d => !string.IsNullOrWhiteSpace(d.ExtractedText))
+                    .Select(d =>
+                    {
+                        var text = d.ExtractedText!.Length > 3000 ? d.ExtractedText[..3000] + "…" : d.ExtractedText;
+                        return $"\n\n--- ATTACHMENT: {d.Title} ---\n{text}";
+                    }));
+
+                return $"""
+                    From: {email.SenderName} <{email.SenderEmail}>
+                    Date: {email.ReceivedDate:ddd d MMM yyyy HH:mm}
+                    Subject: {email.Subject}
+                    Link: {GmailLinks.ForThread(email.ThreadId)}
+
+                    {body}{attachments}
+                    """;
+            }
+
             case "update_calendar_event":
             {
                 var eventId = input?["event_id"]?.GetValue<string>();
