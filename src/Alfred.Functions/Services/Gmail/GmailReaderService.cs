@@ -41,7 +41,7 @@ public partial class GmailReaderService : IGmailReaderService
     public async Task<List<SchoolEmail>> GetNewEmailsAsync()
     {
         var afterEpoch = DateTimeOffset.UtcNow.AddHours(-_alfredOptions.LookbackHours).ToUnixTimeSeconds();
-        var query = $"is:unread from:{_alfredOptions.SchoolEmailSender} after:{afterEpoch}";
+        var query = $"{UnreadFilter}from:{_alfredOptions.SchoolEmailSender} after:{afterEpoch}";
 
         return await FetchNewEmailsAsync(
             query,
@@ -56,8 +56,8 @@ public partial class GmailReaderService : IGmailReaderService
             ? _alfredOptions.PersonalLookbackHours
             : _alfredOptions.LookbackHours;
         var afterEpoch = DateTimeOffset.UtcNow.AddHours(-lookbackHours).ToUnixTimeSeconds();
-        // Everything unread in the inbox except school mail; promotions/social tabs are noise not worth a Claude call
-        var query = $"is:unread in:inbox -from:{_alfredOptions.SchoolEmailSender} -category:promotions -category:social after:{afterEpoch}";
+        // Everything in the inbox except school mail; promotions/social tabs are noise not worth a Claude call
+        var query = $"{UnreadFilter}in:inbox -from:{_alfredOptions.SchoolEmailSender} -category:promotions -category:social after:{afterEpoch}";
 
         return await FetchNewEmailsAsync(
             query,
@@ -65,6 +65,10 @@ public partial class GmailReaderService : IGmailReaderService
             downloadLinkedDocuments: false,
             label: "personal");
     }
+
+    // Date-window queries (the default) catch emails Matthew reads before the poll — the
+    // ProcessedEmails table is what prevents reprocessing, not the unread flag
+    private string UnreadFilter => _alfredOptions.IncludeReadEmails ? "" : "is:unread ";
 
     private async Task<List<SchoolEmail>> FetchNewEmailsAsync(
         string query, Func<string, Task<bool>> isProcessed, bool downloadLinkedDocuments, string label)
@@ -393,7 +397,8 @@ public partial class GmailReaderService : IGmailReaderService
                 SenderEmail = ExtractEmail(from),
                 ReceivedDate = receivedDate,
                 Body = body,
-                Documents = documents
+                Documents = documents,
+                WasUnread = message.LabelIds?.Contains("UNREAD") ?? true
             };
         }
         catch (Exception ex)

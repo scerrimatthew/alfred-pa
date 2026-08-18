@@ -88,7 +88,12 @@ public class PersonalEmailMonitorFunction
                         if (string.IsNullOrWhiteSpace(triage.FraudWarning))
                             await _calendarService.ProcessPersonalEventsAsync(triage.CalendarEvents, email.MessageId);
 
-                        if (triage.RequiresAttention || _alfredOptions.NotifyAllPersonalEmails)
+                        // Emails Matthew already read himself are processed silently — except
+                        // fraud warnings, which he may not have spotted while reading
+                        var shouldNotify = (triage.RequiresAttention || _alfredOptions.NotifyAllPersonalEmails)
+                            && (email.WasUnread || !string.IsNullOrWhiteSpace(triage.FraudWarning));
+
+                        if (shouldNotify)
                         {
                             var message = !string.IsNullOrWhiteSpace(triage.TelegramMessage)
                                 ? triage.TelegramMessage

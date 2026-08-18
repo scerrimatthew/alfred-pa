@@ -21,6 +21,11 @@ public class AlfredOptions
     public bool NotifyAllPersonalEmails { get; set; } = false;
     public string PersonalCalendarId { get; set; } = "primary";
     public int PersonalLookbackHours { get; set; } = 0; // 0 = use LookbackHours
+
+    // When true (default) the monitors query by date window instead of is:unread, so emails
+    // Matthew reads before the next poll still get processed (silently — no alert) and appear
+    // in digests and chat context. False restores the old unread-only behavior.
+    public bool IncludeReadEmails { get; set; } = true;
     public int PersonalDigestDaysAhead { get; set; } = 7;
 
     // Summer break window (MM-dd, inclusive, Malta time). Evening digests pause during

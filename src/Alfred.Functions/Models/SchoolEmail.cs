@@ -10,6 +10,9 @@ public class SchoolEmail
     public required DateTimeOffset ReceivedDate { get; set; }
     public required string Body { get; set; }
     public List<LinkedDocument> Documents { get; set; } = [];
+    // False when the email was already read before Alfred saw it (user got there first) —
+    // such emails are processed silently: state, labels, and digest, but no alert
+    public bool WasUnread { get; set; } = true;
 }
 
 public class LinkedDocument

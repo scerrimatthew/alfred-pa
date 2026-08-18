@@ -69,14 +69,17 @@ public class EmailMonitorFunction
 
                     await _calendarService.ProcessEventsAsync(digest.CalendarEvents, email.MessageId);
 
-                    if (digest.RequiresImmediateAlert || inSummerBreak)
+                    // An email the parents already read never alerts — it still feeds the
+                    // evening digest, calendar, and chat context
+                    if ((digest.RequiresImmediateAlert || inSummerBreak) && email.WasUnread)
                     {
                         var gmailLink = $"\n\n<a href=\"{GmailLinks.ForThread(email.ThreadId)}\">Open in Gmail</a>";
                         await _notificationService.SendAlertAsync(digest.TelegramMessage + gmailLink);
                     }
                     else
                     {
-                        _logger.LogInformation("Skipping immediate notification, will appear in evening digest: {Subject}", email.Subject);
+                        _logger.LogInformation("Skipping immediate notification ({Reason}), will appear in evening digest: {Subject}",
+                            email.WasUnread ? "not urgent" : "already read", email.Subject);
                     }
 
                     await _stateService.MarkEmailProcessedAsync(
