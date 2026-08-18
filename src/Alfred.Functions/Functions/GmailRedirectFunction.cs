@@ -20,11 +20,12 @@ public partial class GmailRedirectFunction
             return req.CreateResponse(HttpStatusCode.BadRequest);
         }
 
-        // accountId by email is unambiguous — an index (accountId=1) targets whichever account
-        // happens to be first in the Gmail app and silently lands on the inbox when wrong
+        // The Gmail iOS app has no working deep link to a specific message (the legacy
+        // googlegmail:///cv scheme opens the app but never navigates), so the best working
+        // experience is web Gmail opened directly at the message. Addressing the account by
+        // email avoids landing in the wrong signed-in account.
         var account = Environment.GetEnvironmentVariable("Alfred__GmailAccount") ?? "scerri.matthew@gmail.com";
-        var webUrl = $"https://mail.google.com/mail/u/0/#all/{threadId}";
-        var appUrl = $"googlegmail:///cv={threadId}/accountId={account}";
+        var webUrl = $"https://mail.google.com/mail/u/{account}/#all/{threadId}";
 
         var response = req.CreateResponse(HttpStatusCode.OK);
         response.Headers.Add("Content-Type", "text/html; charset=utf-8");
@@ -34,11 +35,8 @@ public partial class GmailRedirectFunction
             <head><meta name="viewport" content="width=device-width, initial-scale=1"><title>Opening Gmail…</title></head>
             <body style="font-family:-apple-system,Segoe UI,sans-serif;text-align:center;padding-top:4em;color:#444">
             <p>Opening Gmail…</p>
-            <p><a href="{{webUrl}}">Open in Gmail on the web instead</a></p>
-            <script>
-              window.location.href = "{{appUrl}}";
-              setTimeout(function () { window.location.href = "{{webUrl}}"; }, 1600);
-            </script>
+            <p><a href="{{webUrl}}">Tap here if nothing happens</a></p>
+            <script>window.location.replace("{{webUrl}}");</script>
             </body>
             </html>
             """);
