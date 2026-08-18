@@ -10,4 +10,6 @@ public class PersonalEmailTriage
     public bool Suppressed { get; set; }
     public string? MatchedRule { get; set; }
     public string? MatchedAttentionRule { get; set; }
+    // One-sentence warning when a payment request looks like impersonation/fraud; null when clean
+    public string? FraudWarning { get; set; }
 }

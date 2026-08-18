@@ -937,6 +937,20 @@ public class ClaudeSummarizerService : ISummarizerService
                notifications, past dates, or anything without a clear action for Matthew.
                Use an empty array when there is nothing actionable.
 
+            FRAUD CHECK — for any email asking for money or payment details (invoices, payment
+            requests, bank-detail changes), sanity-check it before summarizing:
+            - Does the actual sender address ({email.SenderEmail}) plausibly belong to the
+              organization the email claims to be from? Watch for lookalike domains
+              (g0.com.mt, hsbc-secure-alerts.com), freemail addresses (gmail/outlook/yahoo)
+              claiming to be companies, and reply-to mismatches mentioned in the body.
+            - Classic invoice-fraud tells: "our bank details have changed", unusual urgency or
+              secrecy, payment methods like gift cards or crypto, a claimed organization Matthew
+              has no visible relationship with.
+            If it looks suspicious, set "fraudWarning" to ONE plain sentence naming the specific
+            mismatch (e.g. "Claims to be BOV but was sent from bov-alerts.net, which is not the
+            bank's domain."). Otherwise set it to null — an expected invoice from a matching
+            domain is NOT suspicious, and false alarms teach Matthew to ignore real ones.
+
             5. "telegramMessage": ALWAYS provide this, even when requiresAttention is false.
                Write it the way a sharp human PA would text Matthew — NOT a form or report:
                - Conversational and direct, usually 1-3 short sentences. No section headers,
@@ -951,6 +965,8 @@ public class ClaudeSummarizerService : ISummarizerService
                  "Sarah replied about the weekend plans — she can do Saturday."
                - Only use these HTML tags: <b>, <a href="">. No other tags.
                - Do NOT escape any characters — HTML mode handles special chars natively
+
+            6. "fraudWarning": string or null, per the FRAUD CHECK above.
 
             Email Subject: {email.Subject}
             From: {email.SenderName} <{email.SenderEmail}>
@@ -990,10 +1006,14 @@ public class ClaudeSummarizerService : ISummarizerService
                 ? marProp.GetString()
                 : null;
 
+            var fraudWarning = root.TryGetProperty("fraudWarning", out var fwProp) && fwProp.ValueKind == JsonValueKind.String
+                ? fwProp.GetString()
+                : null;
+
             return new PersonalEmailTriage
             {
-                // An attention rule match always notifies and beats any suppression rule
-                RequiresAttention = requiresAttention || matchedAttentionRule is not null,
+                // An attention rule match or a fraud warning always notifies and beats suppression
+                RequiresAttention = requiresAttention || matchedAttentionRule is not null || fraudWarning is not null,
                 Category = root.TryGetProperty("category", out var catProp)
                     ? catProp.GetString() ?? "other"
                     : "other",
@@ -1004,13 +1024,14 @@ public class ClaudeSummarizerService : ISummarizerService
                     ? tmProp.GetString() ?? ""
                     : "",
                 CalendarEvents = ParseCalendarEvents(root),
-                Suppressed = matchedAttentionRule is null
+                Suppressed = matchedAttentionRule is null && fraudWarning is null
                     && root.TryGetProperty("suppressed", out var supProp)
                     && supProp.ValueKind == JsonValueKind.True,
                 MatchedRule = root.TryGetProperty("matchedRule", out var mrProp) && mrProp.ValueKind == JsonValueKind.String
                     ? mrProp.GetString()
                     : null,
-                MatchedAttentionRule = matchedAttentionRule
+                MatchedAttentionRule = matchedAttentionRule,
+                FraudWarning = fraudWarning
             };
         }
         catch (JsonException)

@@ -78,13 +78,18 @@ public class PersonalEmailMonitorFunction
                     }
                     else
                     {
-                        await _calendarService.ProcessPersonalEventsAsync(triage.CalendarEvents, email.MessageId);
+                        // Never create "pay this" reminders from an email that looks fraudulent
+                        if (string.IsNullOrWhiteSpace(triage.FraudWarning))
+                            await _calendarService.ProcessPersonalEventsAsync(triage.CalendarEvents, email.MessageId);
 
                         if (triage.RequiresAttention || _alfredOptions.NotifyAllPersonalEmails)
                         {
                             var message = !string.IsNullOrWhiteSpace(triage.TelegramMessage)
                                 ? triage.TelegramMessage
                                 : $"📬 <b>{email.Subject}</b>\nFrom: {email.SenderName}\n\n{triage.Summary}";
+
+                            if (!string.IsNullOrWhiteSpace(triage.FraudWarning))
+                                message = $"⚠️ <b>Careful:</b> {triage.FraudWarning}\n\n{message}";
 
                             message += $"\n\n<a href=\"{GmailLinks.ForThread(email.ThreadId)}\">Open in Gmail</a>";
 
