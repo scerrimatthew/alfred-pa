@@ -7,7 +7,10 @@ public interface IStateService
     Task<bool> IsEmailProcessedAsync(string messageId);
     Task MarkEmailProcessedAsync(string messageId, string subject, string senderName, string summary, string? homework = null, string? category = null, string? threadId = null);
     Task<bool> IsPersonalEmailProcessedAsync(string messageId);
-    Task MarkPersonalEmailProcessedAsync(string messageId, string subject, string senderName, string summary, string? category = null, bool suppressed = false, string? threadId = null, string? senderEmail = null, bool needsReply = false);
+    Task MarkPersonalEmailProcessedAsync(string messageId, string subject, string senderName, string summary, string? category = null, bool suppressed = false, string? threadId = null, string? senderEmail = null, bool needsReply = false, DateTimeOffset? processedAt = null);
+    Task<BackfillStateEntity?> GetBackfillStateAsync();
+    Task SaveBackfillStateAsync(BackfillStateEntity entity);
+    Task ClearBackfillStateAsync();
     Task<List<ProcessedEmailEntity>> GetPersonalEmailsNeedingReplyAsync(DateTimeOffset since);
     Task ClearNeedsReplyAsync(string messageId);
     Task<ProcessedEmailEntity?> GetPersonalEmailAsync(string messageId);

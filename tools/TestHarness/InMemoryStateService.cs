@@ -31,7 +31,7 @@ public class InMemoryStateService : IStateService
     public Task<bool> IsPersonalEmailProcessedAsync(string messageId) =>
         Task.FromResult(_personalEmails.ContainsKey(messageId));
 
-    public Task MarkPersonalEmailProcessedAsync(string messageId, string subject, string senderName, string summary, string? category = null, bool suppressed = false, string? threadId = null, string? senderEmail = null, bool needsReply = false)
+    public Task MarkPersonalEmailProcessedAsync(string messageId, string subject, string senderName, string summary, string? category = null, bool suppressed = false, string? threadId = null, string? senderEmail = null, bool needsReply = false, DateTimeOffset? processedAt = null)
     {
         _personalEmails[messageId] = new ProcessedEmailEntity
         {
@@ -45,9 +45,25 @@ public class InMemoryStateService : IStateService
             Suppressed = suppressed,
             GmailThreadId = threadId,
             NeedsReply = needsReply,
-            ProcessedAt = DateTimeOffset.UtcNow
+            ProcessedAt = processedAt ?? DateTimeOffset.UtcNow
         };
         Console.WriteLine($"  [State] Marked personal email as processed: {subject}");
+        return Task.CompletedTask;
+    }
+
+    private BackfillStateEntity? _backfillState;
+
+    public Task<BackfillStateEntity?> GetBackfillStateAsync() => Task.FromResult(_backfillState);
+
+    public Task SaveBackfillStateAsync(BackfillStateEntity entity)
+    {
+        _backfillState = entity;
+        return Task.CompletedTask;
+    }
+
+    public Task ClearBackfillStateAsync()
+    {
+        _backfillState = null;
         return Task.CompletedTask;
     }
 

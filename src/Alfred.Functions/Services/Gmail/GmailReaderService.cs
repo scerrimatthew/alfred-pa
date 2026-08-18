@@ -124,6 +124,79 @@ public partial class GmailReaderService : IGmailReaderService
         return newEmails;
     }
 
+    // One batch of a historical sweep: the OLDEST unprocessed personal emails in the
+    // window. Pages the entire window's message ids (cheap) before choosing, so the
+    // batch is genuinely oldest-first and already-processed mail — from earlier
+    // batches, normal runs, or previous backfills — is never fetched twice.
+    public async Task<List<SchoolEmail>> GetBackfillBatchAsync(DateTimeOffset oldestDate, int batchSize)
+    {
+        const int maxRefsToScan = 2000;
+
+        var gmailService = CreateGmailService();
+        var afterEpoch = oldestDate.ToUnixTimeSeconds();
+        // Same shape as the personal monitor query, but read state is irrelevant here
+        var query = $"in:inbox -from:{_alfredOptions.SchoolEmailSender} -category:promotions -category:social after:{afterEpoch}";
+
+        _logger.LogInformation("Backfill query: {Query} (batch {Batch})", query, batchSize);
+
+        var messageRefs = new List<Message>();
+        string? pageToken = null;
+        do
+        {
+            var request = gmailService.Users.Messages.List("me");
+            request.Q = query;
+            request.MaxResults = 100;
+            request.PageToken = pageToken;
+
+            var response = await request.ExecuteAsync();
+            if (response.Messages is not null)
+                messageRefs.AddRange(response.Messages);
+
+            pageToken = response.NextPageToken;
+        } while (pageToken is not null && messageRefs.Count < maxRefsToScan);
+
+        // Gmail lists newest first — walk from the end so the batch is oldest-first
+        messageRefs.Reverse();
+
+        var batch = new List<SchoolEmail>();
+        foreach (var messageRef in messageRefs)
+        {
+            if (batch.Count >= batchSize)
+                break;
+
+            if (await _stateService.IsPersonalEmailProcessedAsync(messageRef.Id))
+                continue;
+
+            var fullMessage = await gmailService.Users.Messages.Get("me", messageRef.Id).ExecuteAsync();
+            var email = await ParseMessageAsync(gmailService, fullMessage, downloadLinkedDocuments: false);
+            if (email is not null)
+                batch.Add(email);
+        }
+
+        _logger.LogInformation("Backfill batch: {Count} unprocessed emails (scanned {Refs} refs)",
+            batch.Count, messageRefs.Count);
+        return batch;
+    }
+
+    // Applies the category label without touching the read flag — backfilled mail
+    // keeps whatever read state Matthew left it in
+    public async Task LabelWithoutMarkingReadAsync(string messageId, string labelPath)
+    {
+        try
+        {
+            var gmailService = CreateGmailService();
+            var labelId = await GetOrCreateLabelIdAsync(gmailService, labelPath);
+
+            var request = new ModifyMessageRequest { AddLabelIds = [labelId] };
+            await gmailService.Users.Messages.Modify(request, "me", messageId).ExecuteAsync();
+        }
+        catch (Exception ex)
+        {
+            // Best-effort, same as MarkAsReadAndLabelAsync
+            _logger.LogWarning(ex, "Failed to label {MessageId} with {Label}", messageId, labelPath);
+        }
+    }
+
     public async Task<List<InboxSearchResult>> SearchInboxAsync(string query, int maxResults)
     {
         var gmailService = CreateGmailService();

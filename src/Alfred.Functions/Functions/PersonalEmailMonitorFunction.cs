@@ -1,4 +1,5 @@
 using Alfred.Functions.Configuration;
+using Alfred.Functions.Models;
 using Alfred.Functions.Services.AI;
 using Alfred.Functions.Services.Calendar;
 using Alfred.Functions.Services.Gmail;
@@ -56,8 +57,8 @@ public class PersonalEmailMonitorFunction
 
             if (newEmails.Count == 0)
             {
+                // Fresh mail is done either way; a pending backfill still gets its batch below
                 _logger.LogInformation("No new personal emails found");
-                return;
             }
 
             var suppressionRules = await _stateService.GetSuppressionRulesAsync();
@@ -158,6 +159,106 @@ public class PersonalEmailMonitorFunction
         {
             _logger.LogError(ex, "PersonalEmailMonitor failed");
             await _notificationService.SendPersonalErrorAsync($"PersonalEmailMonitor failed: {ex.Message}");
+        }
+
+        await ProcessBackfillBatchAsync();
+    }
+
+    // One batch of a /backfill sweep, run after (and never instead of) fresh mail.
+    // Quiet by design: no notifications, no needs-reply nagging, labels without
+    // changing read state, and ProcessedAt backdated to the receive date. Calendar
+    // events are still created — the triage prompt drops dates that already passed.
+    // The ProcessedEmails table dedups everything, so overlapping backfills or an
+    // overlap with normal runs never processes an email twice.
+    private const int BackfillBatchSize = 20;
+
+    private async Task ProcessBackfillBatchAsync()
+    {
+        BackfillStateEntity? backfill;
+        try
+        {
+            backfill = await _stateService.GetBackfillStateAsync();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Backfill state check failed");
+            return;
+        }
+
+        if (backfill is null)
+            return;
+
+        try
+        {
+            var batch = await _gmailReader.GetBackfillBatchAsync(backfill.OldestDate, BackfillBatchSize);
+
+            if (batch.Count > 0)
+            {
+                var suppressionRules = await _stateService.GetSuppressionRulesAsync();
+                var attentionRules = await _stateService.GetAttentionRulesAsync();
+
+                foreach (var email in batch)
+                {
+                    try
+                    {
+                        _logger.LogInformation("Backfill triage: {Subject} ({Date})", email.Subject, email.ReceivedDate);
+
+                        var threadContext = email.ThreadId != email.MessageId
+                            ? await _stateService.GetPersonalEmailsByThreadAsync(email.ThreadId)
+                            : [];
+
+                        var triage = await _summarizer.TriagePersonalEmailAsync(email, suppressionRules, attentionRules, threadContext);
+
+                        if (!triage.Suppressed && string.IsNullOrWhiteSpace(triage.FraudWarning))
+                            await _calendarService.ProcessPersonalEventsAsync(triage.CalendarEvents, email.MessageId);
+
+                        await _stateService.MarkPersonalEmailProcessedAsync(
+                            email.MessageId, email.Subject, email.SenderName, triage.Summary, triage.Category,
+                            triage.Suppressed, email.ThreadId, email.SenderEmail,
+                            needsReply: false, processedAt: email.ReceivedDate);
+
+                        await _gmailReader.LabelWithoutMarkingReadAsync(email.MessageId, LabelNames.ForPersonal(triage.Category));
+
+                        if (!string.IsNullOrWhiteSpace(email.SenderEmail))
+                        {
+                            await _stateService.RecordSenderSeenAsync(
+                                email.SenderEmail, email.SenderName,
+                                wasQuiet: triage.Suppressed || !triage.RequiresAttention,
+                                email.ListUnsubscribe, email.ListUnsubscribeOneClick);
+                        }
+
+                        backfill.ProcessedCount++;
+                    }
+                    catch (Exception ex)
+                    {
+                        // Quiet mode: log and move on — the email stays unprocessed and the
+                        // next batch retries it
+                        _logger.LogError(ex, "Backfill failed on {Subject} ({MessageId})", email.Subject, email.MessageId);
+                    }
+                }
+
+                await _stateService.SaveBackfillStateAsync(backfill);
+            }
+
+            if (batch.Count < BackfillBatchSize)
+            {
+                await _stateService.ClearBackfillStateAsync();
+                var days = (int)Math.Ceiling((DateTimeOffset.UtcNow - backfill.OldestDate).TotalDays);
+                await _notificationService.SendPersonalAlertAsync(
+                    $"🗂️ Backfill finished — I've quietly filed <b>{backfill.ProcessedCount}</b> emails from the last {days} days: "
+                    + "categorized and labeled in Gmail, future deadlines on your calendar, and all of it available to ask about.");
+                _logger.LogInformation("Backfill complete: {Count} emails processed", backfill.ProcessedCount);
+            }
+            else
+            {
+                _logger.LogInformation("Backfill progress: {Count} processed so far, more remaining", backfill.ProcessedCount);
+            }
+        }
+        catch (Exception ex)
+        {
+            // Quiet mode: never notify about backfill hiccups; the marker stays and the
+            // next run picks up where this one stopped
+            _logger.LogError(ex, "Backfill batch failed; will retry next run");
         }
     }
 }

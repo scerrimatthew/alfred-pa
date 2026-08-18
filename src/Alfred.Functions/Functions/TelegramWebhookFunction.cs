@@ -102,6 +102,12 @@ public class TelegramWebhookFunction
                 return req.CreateResponse(System.Net.HttpStatusCode.OK);
             }
 
+            if (isPersonalChat && question.TrimStart().StartsWith("/backfill", StringComparison.OrdinalIgnoreCase))
+            {
+                await HandleBackfillCommandAsync(chatId, question.TrimStart()["/backfill".Length..].Trim());
+                return req.CreateResponse(System.Net.HttpStatusCode.OK);
+            }
+
             var command = question.Trim();
             if (command.Equals("/new", StringComparison.OrdinalIgnoreCase) ||
                 command.Equals("/reset", StringComparison.OrdinalIgnoreCase))
@@ -356,6 +362,53 @@ public class TelegramWebhookFunction
         var nowMalta = TimeZoneInfo.ConvertTime(DateTimeOffset.UtcNow, maltaTz);
         var tomorrowMorning = nowMalta.Date.AddDays(1).AddHours(8);
         return new DateTimeOffset(tomorrowMorning, maltaTz.GetUtcOffset(tomorrowMorning));
+    }
+
+    // "/backfill <days>" starts a quiet historical sweep of the personal inbox; each
+    // PersonalEmailMonitor run then works through a batch until the window is covered.
+    // Intersections with earlier backfills or normal runs are deduped by ProcessedEmails.
+    private async Task HandleBackfillCommandAsync(long chatId, string argument)
+    {
+        if (argument.Equals("cancel", StringComparison.OrdinalIgnoreCase)
+            || argument.Equals("stop", StringComparison.OrdinalIgnoreCase))
+        {
+            await _stateService.ClearBackfillStateAsync();
+            await _notificationService.SendMessageAsync(chatId, "Backfill cancelled — anything already filed stays filed.");
+            return;
+        }
+
+        if (argument.Equals("status", StringComparison.OrdinalIgnoreCase))
+        {
+            var current = await _stateService.GetBackfillStateAsync();
+            await _notificationService.SendMessageAsync(chatId, current is null
+                ? "No backfill is running."
+                : $"Backfill running — {current.ProcessedCount} emails filed so far, window back to {current.OldestDate:d MMM yyyy}.");
+            return;
+        }
+
+        var days = 60;
+        if (argument.Length > 0 && (!int.TryParse(argument, out days) || days < 1 || days > 365))
+        {
+            await _notificationService.SendMessageAsync(chatId,
+                "Usage: /backfill [days 1-365], /backfill status, or /backfill cancel. Default is 60 days.");
+            return;
+        }
+
+        var existing = await _stateService.GetBackfillStateAsync();
+        var state = new Models.BackfillStateEntity
+        {
+            OldestDate = DateTimeOffset.UtcNow.AddDays(-days),
+            RequestedAt = DateTimeOffset.UtcNow,
+            // A wider re-request keeps credit for work already done; dedup prevents redoing it
+            ProcessedCount = existing?.ProcessedCount ?? 0
+        };
+        await _stateService.SaveBackfillStateAsync(state);
+
+        await _notificationService.SendMessageAsync(chatId,
+            $"Backfill started — I'll quietly work through the last <b>{days} days</b> of inbox email in batches "
+            + "(roughly every 15 minutes), categorizing, labeling, and picking up future deadlines. "
+            + "No notifications along the way; I'll message you once when it's done. "
+            + "Anything already processed is skipped automatically.");
     }
 
     // "/evolve <instruction>" hands the instruction to a GitHub Actions workflow that runs a

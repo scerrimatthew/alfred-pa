@@ -14,4 +14,6 @@ public interface IGmailReaderService
     Task<string> CreateReplyDraftAsync(string messageId, string body, bool replyAll);
     Task<bool> HasRepliedAsync(string threadId, string messageId);
     Task SendUnsubscribeEmailAsync(string toAddress, string? subject);
+    Task<List<SchoolEmail>> GetBackfillBatchAsync(DateTimeOffset oldestDate, int batchSize);
+    Task LabelWithoutMarkingReadAsync(string messageId, string labelPath);
 }

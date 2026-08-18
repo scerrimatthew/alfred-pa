@@ -13,6 +13,7 @@ public class TableStorageStateService : IStateService
     private const string SnoozedEmailsTable = "SnoozedEmails";
     private const string AttentionRulesTable = "AttentionRules";
     private const string SenderStatsTable = "SenderStats";
+    private const string BackfillStateTable = "BackfillState";
     private const string ChatHistoryTable = "ChatHistory";
     private const string SchoolPartition = "emails";
     private const string PersonalPartition = "personal";
@@ -52,10 +53,10 @@ public class TableStorageStateService : IStateService
     public Task MarkEmailProcessedAsync(string messageId, string subject, string senderName, string summary, string? homework = null, string? category = null, string? threadId = null) =>
         MarkProcessedAsync(SchoolPartition, messageId, subject, senderName, summary, homework, category, suppressed: false, threadId);
 
-    public Task MarkPersonalEmailProcessedAsync(string messageId, string subject, string senderName, string summary, string? category = null, bool suppressed = false, string? threadId = null, string? senderEmail = null, bool needsReply = false) =>
-        MarkProcessedAsync(PersonalPartition, messageId, subject, senderName, summary, homework: null, category, suppressed, threadId, senderEmail, needsReply);
+    public Task MarkPersonalEmailProcessedAsync(string messageId, string subject, string senderName, string summary, string? category = null, bool suppressed = false, string? threadId = null, string? senderEmail = null, bool needsReply = false, DateTimeOffset? processedAt = null) =>
+        MarkProcessedAsync(PersonalPartition, messageId, subject, senderName, summary, homework: null, category, suppressed, threadId, senderEmail, needsReply, processedAt);
 
-    private async Task MarkProcessedAsync(string partition, string messageId, string subject, string senderName, string summary, string? homework, string? category, bool suppressed = false, string? threadId = null, string? senderEmail = null, bool needsReply = false)
+    private async Task MarkProcessedAsync(string partition, string messageId, string subject, string senderName, string summary, string? homework, string? category, bool suppressed = false, string? threadId = null, string? senderEmail = null, bool needsReply = false, DateTimeOffset? processedAt = null)
     {
         var tableClient = _tableServiceClient.GetTableClient(ProcessedEmailsTable);
         await tableClient.CreateIfNotExistsAsync();
@@ -73,7 +74,9 @@ public class TableStorageStateService : IStateService
             Suppressed = suppressed,
             GmailThreadId = threadId,
             NeedsReply = needsReply,
-            ProcessedAt = DateTimeOffset.UtcNow
+            // Backfills backdate ProcessedAt to the email's receive date so historical
+            // mail never shows up in "today's" digest or the needs-reply window
+            ProcessedAt = processedAt ?? DateTimeOffset.UtcNow
         };
 
         await tableClient.UpsertEntityAsync(entity);
@@ -304,6 +307,43 @@ public class TableStorageStateService : IStateService
         {
             await tableClient.DeleteEntityAsync(RulesPartition, ruleId);
             _logger.LogInformation("Deleted suppression rule {RuleId}", ruleId);
+        }
+        catch (RequestFailedException ex) when (ex.Status == 404)
+        {
+            // Already gone, ignore
+        }
+    }
+
+    public async Task<BackfillStateEntity?> GetBackfillStateAsync()
+    {
+        var tableClient = _tableServiceClient.GetTableClient(BackfillStateTable);
+        await tableClient.CreateIfNotExistsAsync();
+
+        try
+        {
+            return (await tableClient.GetEntityAsync<BackfillStateEntity>(PersonalPartition, "backfill")).Value;
+        }
+        catch (RequestFailedException ex) when (ex.Status == 404)
+        {
+            return null;
+        }
+    }
+
+    public async Task SaveBackfillStateAsync(BackfillStateEntity entity)
+    {
+        var tableClient = _tableServiceClient.GetTableClient(BackfillStateTable);
+        await tableClient.CreateIfNotExistsAsync();
+        await tableClient.UpsertEntityAsync(entity);
+    }
+
+    public async Task ClearBackfillStateAsync()
+    {
+        var tableClient = _tableServiceClient.GetTableClient(BackfillStateTable);
+        await tableClient.CreateIfNotExistsAsync();
+
+        try
+        {
+            await tableClient.DeleteEntityAsync(PersonalPartition, "backfill");
         }
         catch (RequestFailedException ex) when (ex.Status == 404)
         {
