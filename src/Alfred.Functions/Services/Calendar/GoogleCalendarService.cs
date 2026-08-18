@@ -16,6 +16,9 @@ namespace Alfred.Functions.Services.Calendar;
 
 public class GoogleCalendarService : ICalendarService
 {
+    // How far ahead of "now" a reminder is placed when its ideal time has already passed
+    private const int ImminentReminderLeadMinutes = 5;
+
     private readonly AlfredOptions _alfredOptions;
     private readonly GoogleOptions _googleOptions;
     private readonly IStateService _stateService;
@@ -121,6 +124,7 @@ public class GoogleCalendarService : ICalendarService
                 // All-day event (stays all-day unless a start time was provided)
                 ev.Start = new EventDateTime { Date = newDate.ToString("yyyy-MM-dd"), DateTimeDateTimeOffset = null };
                 ev.End = new EventDateTime { Date = newDate.AddDays(1).ToString("yyyy-MM-dd"), DateTimeDateTimeOffset = null };
+                ev.Reminders = BuildReminder(newDate.Date);
             }
             else
             {
@@ -134,6 +138,7 @@ public class GoogleCalendarService : ICalendarService
                 var offset = maltaTz.GetUtcOffset(startDt);
                 ev.Start = new EventDateTime { DateTimeDateTimeOffset = new DateTimeOffset(startDt, offset), TimeZone = "Europe/Malta", Date = null };
                 ev.End = new EventDateTime { DateTimeDateTimeOffset = new DateTimeOffset(endDt, offset), TimeZone = "Europe/Malta", Date = null };
+                ev.Reminders = BuildReminder(startDt);
             }
         }
 
@@ -213,16 +218,31 @@ public class GoogleCalendarService : ICalendarService
 
     private static bool TitlesAreSimilar(string a, string b)
     {
-        var wordsA = ExtractSignificantWords(a);
-        var wordsB = ExtractSignificantWords(b);
+        var wordsA = ExtractSignificantWords(StripCategoryPrefix(a));
+        var wordsB = ExtractSignificantWords(StripCategoryPrefix(b));
 
         if (wordsA.Count == 0 || wordsB.Count == 0) return false;
 
         var shared = wordsA.Intersect(wordsB).Count();
         var smaller = Math.Min(wordsA.Count, wordsB.Count);
 
-        // If at least half the significant words match, consider them similar
-        return shared >= Math.Ceiling(smaller / 2.0);
+        // Two thirds of the distinctive words must match. Half was loose enough that two
+        // unrelated entries in the same window ("Pay GO invoice" / "Pay Melita invoice")
+        // looked like one event, and the second one's reminder was silently dropped
+        return shared >= Math.Ceiling(smaller * 2 / 3.0);
+    }
+
+    // Every title Alfred writes opens with one of these, so the prefix says nothing about
+    // whether two events are the same — comparing it only inflates the similarity score
+    private static readonly HashSet<string> CategoryPrefixes = new(StringComparer.OrdinalIgnoreCase)
+        { "Outing", "Activity", "Meeting", "Deadline", "Holiday", "Appointment" };
+
+    private static string StripCategoryPrefix(string title)
+    {
+        var colon = title.IndexOf(':');
+        if (colon < 0) return title;
+
+        return CategoryPrefixes.Contains(title[..colon].Trim()) ? title[(colon + 1)..] : title;
     }
 
     private static readonly HashSet<string> StopWords =
@@ -232,7 +252,7 @@ public class GoogleCalendarService : ICalendarService
     {
         var words = text
             .ToLowerInvariant()
-            .Split([' ', '-', ':', '(', ')', ',', '.'], StringSplitOptions.RemoveEmptyEntries)
+            .Split([' ', '-', ':', '(', ')', ',', '.', '\'', '\u2019'], StringSplitOptions.RemoveEmptyEntries)
             .Where(w => !StopWords.Contains(w) && w.Length > 1)
             .ToHashSet();
         return words;
@@ -300,12 +320,8 @@ public class GoogleCalendarService : ICalendarService
             calendarEvent.Start = new EventDateTime { Date = eventInfo.Date.ToString("yyyy-MM-dd") };
             calendarEvent.End = new EventDateTime { Date = eventInfo.Date.AddDays(1).ToString("yyyy-MM-dd") };
 
-            // All-day events start at midnight — reminder at 6 PM day before = 6 hours before
-            calendarEvent.Reminders = new Event.RemindersData
-            {
-                UseDefault = false,
-                Overrides = [new EventReminder { Method = "popup", Minutes = 6 * 60 }]
-            };
+            // All-day events start at midnight
+            calendarEvent.Reminders = BuildReminder(eventInfo.Date.Date);
         }
         else
         {
@@ -326,18 +342,32 @@ public class GoogleCalendarService : ICalendarService
                 TimeZone = "Europe/Malta"
             };
 
-            // Timed event — reminder at 6 PM the day before
-            var reminderTime = eventInfo.Date.AddDays(-1).AddHours(18);
-            var minutesBefore = (int)(startDt - reminderTime).TotalMinutes;
-            if (minutesBefore < 0) minutesBefore = 6 * 60; // fallback
-            calendarEvent.Reminders = new Event.RemindersData
-            {
-                UseDefault = false,
-                Overrides = [new EventReminder { Method = "popup", Minutes = minutesBefore }]
-            };
+            calendarEvent.Reminders = BuildReminder(startDt);
         }
 
         return calendarEvent;
+    }
+
+    // Google stores a reminder as an offset from the event start, so an offset pointing at a
+    // moment that has already gone simply never fires. Anything created or moved after the
+    // usual nudge time gets pulled forward instead of being lost.
+    private static Event.RemindersData BuildReminder(DateTime startMalta)
+    {
+        var maltaTz = TimeZoneInfo.FindSystemTimeZoneById("Europe/Malta");
+        var nowMalta = TimeZoneInfo.ConvertTime(DateTimeOffset.UtcNow, maltaTz).DateTime;
+
+        var reminderTime = startMalta.Date.AddDays(-1).AddHours(18);
+        if (reminderTime < nowMalta)
+            reminderTime = nowMalta.AddMinutes(ImminentReminderLeadMinutes);
+
+        // Negative offsets are rejected by the API; an already-started event can't be nudged
+        var minutesBefore = Math.Max(0, (int)Math.Round((startMalta - reminderTime).TotalMinutes));
+
+        return new Event.RemindersData
+        {
+            UseDefault = false,
+            Overrides = [new EventReminder { Method = "popup", Minutes = minutesBefore }]
+        };
     }
 
     private static DateTime GetSchoolDaysFromNow(DateTime start, int schoolDays)
