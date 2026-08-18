@@ -144,8 +144,10 @@ public class TableStorageStateService : IStateService
         await tableClient.CreateIfNotExistsAsync();
 
         var results = new List<ProcessedEmailEntity>();
+        // Explicit == true: rows written before the NeedsReply column existed lack the
+        // property entirely and must not match
         var query = tableClient.QueryAsync<ProcessedEmailEntity>(
-            e => e.PartitionKey == PersonalPartition && e.NeedsReply && e.ProcessedAt >= since);
+            e => e.PartitionKey == PersonalPartition && e.NeedsReply == true && e.ProcessedAt >= since);
 
         await foreach (var entity in query)
         {
