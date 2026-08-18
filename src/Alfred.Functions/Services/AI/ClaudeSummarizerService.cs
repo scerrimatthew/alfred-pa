@@ -211,11 +211,17 @@ public class ClaudeSummarizerService : ISummarizerService
 
     public async Task<string> BuildPersonalDigestAsync(
         List<ProcessedEmailEntity> todaysEmails,
-        List<Google.Apis.Calendar.v3.Data.Event> upcomingActions)
+        List<Google.Apis.Calendar.v3.Data.Event> upcomingActions,
+        List<ProcessedEmailEntity> awaitingReply)
     {
         var client = CreateClient();
 
         var todayStr = DateTime.Now.ToString("dddd, d MMMM yyyy");
+
+        var awaitingList = awaitingReply.Count > 0
+            ? string.Join("\n", awaitingReply.Select(e =>
+                $"- {e.SenderName} — {e.Subject} (arrived {e.ProcessedAt:ddd d MMM}): {e.Summary}"))
+            : "Nothing is waiting on a reply.";
 
         var emailsList = todaysEmails.Count > 0
             ? string.Join("\n", todaysEmails.Select(e =>
@@ -240,8 +246,10 @@ public class ClaudeSummarizerService : ISummarizerService
             Shape it roughly as: a one-line opener starting with the 🤖 emoji, then what's coming up (every action and
             deadline from the data with its date — flag anything due tomorrow or overdue first,
             and never skip an event), then anything from today's emails worth knowing in a
-            sentence or two. When listing more than two upcoming items, compact • bullets are
-            fine; otherwise keep it in prose.
+            sentence or two, then — only if the AWAITING YOUR REPLY section has entries — a
+            gentle nudge naming who is still waiting on him and since when ("Sarah's been
+            waiting on an answer since Tuesday"). When listing more than two upcoming items,
+            compact • bullets are fine; otherwise keep it in prose.
 
             Tone example:
             "🤖 Evening! Two things on the radar: the <b>GO bill (€45.20)</b> is due <b>Wednesday</b>,
@@ -261,6 +269,9 @@ public class ClaudeSummarizerService : ISummarizerService
 
             ## UPCOMING ACTIONS (from the personal calendar)
             {actionsList}
+
+            ## AWAITING YOUR REPLY (emails from real people Matthew hasn't answered)
+            {awaitingList}
 
             Respond with the formatted HTML digest only.
             """;
@@ -311,10 +322,11 @@ public class ClaudeSummarizerService : ISummarizerService
             ? string.Join("\n", personalEmails.OrderByDescending(e => e.ProcessedAt).Select(e =>
             {
                 var muted = e.Suppressed ? " [muted]" : "";
+                var needsReply = e.NeedsReply ? " [needs reply]" : "";
                 var link = !string.IsNullOrEmpty(e.GmailThreadId)
                     ? $" link={Gmail.GmailLinks.ForThread(e.GmailThreadId)}"
                     : "";
-                return $"- id={e.RowKey} [{e.ProcessedAt:ddd d MMM yyyy}] [{e.Category ?? "other"}]{muted} {e.SenderName} — {e.Subject}: {e.Summary}{link}";
+                return $"- id={e.RowKey} [{e.ProcessedAt:ddd d MMM yyyy}] [{e.Category ?? "other"}]{muted}{needsReply} {e.SenderName} — {e.Subject}: {e.Summary}{link}";
             }))
             : "No recent personal emails.";
 
@@ -399,6 +411,8 @@ public class ClaudeSummarizerService : ISummarizerService
             Personal emails also carry link=... — when discussing a specific email, offer it as
             <a href="link">Open in Gmail</a> so Matthew can jump straight to it.
             Emails marked [muted] were suppressed by an existing rule — mention them only if asked.
+            Emails marked [needs reply] are ones Matthew hasn't answered yet ("what am I still
+            owing replies on?") — though he may have replied since the flag was set.
             When Matthew references an email loosely ("that HSBC one"), match it by sender/subject.
             If the reference is ambiguous, ask which one he means instead of guessing.
             After acting, confirm briefly what you did.
@@ -988,6 +1002,12 @@ public class ClaudeSummarizerService : ISummarizerService
 
             6. "fraudWarning": string or null, per the FRAUD CHECK above.
 
+            7. "needsReply": boolean — true ONLY when a real person wrote to Matthew and clearly
+               expects a response from him (a question, an invitation, a request he must answer).
+               False for automated mail, newsletters, receipts, notifications, and FYI-only
+               notes. Alfred nudges Matthew about unanswered needsReply emails, so be
+               conservative — a wrong true nags him about nothing.
+
             Email Subject: {email.Subject}
             From: {email.SenderName} <{email.SenderEmail}>
             To: Matthew (scerri.matthew@gmail.com)
@@ -1051,7 +1071,9 @@ public class ClaudeSummarizerService : ISummarizerService
                     ? mrProp.GetString()
                     : null,
                 MatchedAttentionRule = matchedAttentionRule,
-                FraudWarning = fraudWarning
+                FraudWarning = fraudWarning,
+                NeedsReply = root.TryGetProperty("needsReply", out var nrProp)
+                    && nrProp.ValueKind == JsonValueKind.True
             };
         }
         catch (JsonException)

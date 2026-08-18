@@ -51,10 +51,10 @@ public class TableStorageStateService : IStateService
     public Task MarkEmailProcessedAsync(string messageId, string subject, string senderName, string summary, string? homework = null, string? category = null, string? threadId = null) =>
         MarkProcessedAsync(SchoolPartition, messageId, subject, senderName, summary, homework, category, suppressed: false, threadId);
 
-    public Task MarkPersonalEmailProcessedAsync(string messageId, string subject, string senderName, string summary, string? category = null, bool suppressed = false, string? threadId = null, string? senderEmail = null) =>
-        MarkProcessedAsync(PersonalPartition, messageId, subject, senderName, summary, homework: null, category, suppressed, threadId, senderEmail);
+    public Task MarkPersonalEmailProcessedAsync(string messageId, string subject, string senderName, string summary, string? category = null, bool suppressed = false, string? threadId = null, string? senderEmail = null, bool needsReply = false) =>
+        MarkProcessedAsync(PersonalPartition, messageId, subject, senderName, summary, homework: null, category, suppressed, threadId, senderEmail, needsReply);
 
-    private async Task MarkProcessedAsync(string partition, string messageId, string subject, string senderName, string summary, string? homework, string? category, bool suppressed = false, string? threadId = null, string? senderEmail = null)
+    private async Task MarkProcessedAsync(string partition, string messageId, string subject, string senderName, string summary, string? homework, string? category, bool suppressed = false, string? threadId = null, string? senderEmail = null, bool needsReply = false)
     {
         var tableClient = _tableServiceClient.GetTableClient(ProcessedEmailsTable);
         await tableClient.CreateIfNotExistsAsync();
@@ -71,6 +71,7 @@ public class TableStorageStateService : IStateService
             Category = category,
             Suppressed = suppressed,
             GmailThreadId = threadId,
+            NeedsReply = needsReply,
             ProcessedAt = DateTimeOffset.UtcNow
         };
 
@@ -133,6 +134,41 @@ public class TableStorageStateService : IStateService
         catch (RequestFailedException ex) when (ex.Status == 404)
         {
             _logger.LogWarning("Cannot update category — personal email {MessageId} not found in state", messageId);
+        }
+    }
+
+    public async Task<List<ProcessedEmailEntity>> GetPersonalEmailsNeedingReplyAsync(DateTimeOffset since)
+    {
+        var tableClient = _tableServiceClient.GetTableClient(ProcessedEmailsTable);
+        await tableClient.CreateIfNotExistsAsync();
+
+        var results = new List<ProcessedEmailEntity>();
+        var query = tableClient.QueryAsync<ProcessedEmailEntity>(
+            e => e.PartitionKey == PersonalPartition && e.NeedsReply && e.ProcessedAt >= since);
+
+        await foreach (var entity in query)
+        {
+            results.Add(entity);
+        }
+
+        return results.OrderBy(e => e.ProcessedAt).ToList();
+    }
+
+    public async Task ClearNeedsReplyAsync(string messageId)
+    {
+        var tableClient = _tableServiceClient.GetTableClient(ProcessedEmailsTable);
+        await tableClient.CreateIfNotExistsAsync();
+
+        try
+        {
+            var response = await tableClient.GetEntityAsync<ProcessedEmailEntity>(PersonalPartition, messageId);
+            var entity = response.Value;
+            entity.NeedsReply = false;
+            await tableClient.UpsertEntityAsync(entity);
+        }
+        catch (RequestFailedException ex) when (ex.Status == 404)
+        {
+            // Gone from state — nothing to clear
         }
     }
 

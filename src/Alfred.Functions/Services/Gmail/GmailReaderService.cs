@@ -283,6 +283,30 @@ public partial class GmailReaderService : IGmailReaderService
             + GmailLinks.ForThread(original.ThreadId ?? messageId);
     }
 
+    // True when the thread contains a message Matthew sent after the given message —
+    // i.e. he has already replied and doesn't need a nudge
+    public async Task<bool> HasRepliedAsync(string threadId, string messageId)
+    {
+        var gmailService = CreateGmailService();
+        try
+        {
+            var request = gmailService.Users.Threads.Get("me", threadId);
+            request.Format = UsersResource.ThreadsResource.GetRequest.FormatEnum.Minimal;
+            var thread = await request.ExecuteAsync();
+
+            var messages = thread.Messages ?? [];
+            var targetDate = messages.FirstOrDefault(m => m.Id == messageId)?.InternalDate ?? 0;
+
+            return messages.Any(m => m.LabelIds?.Contains("SENT") == true
+                && (m.InternalDate ?? 0) > targetDate);
+        }
+        catch (Google.GoogleApiException ex) when (ex.HttpStatusCode == System.Net.HttpStatusCode.NotFound)
+        {
+            _logger.LogWarning("Thread {ThreadId} not found while checking for a reply", threadId);
+            return false;
+        }
+    }
+
     private string? _ownAddressCache;
 
     private async Task<string> GetOwnAddressAsync(GmailService gmailService)

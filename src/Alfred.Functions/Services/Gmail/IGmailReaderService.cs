@@ -12,4 +12,5 @@ public interface IGmailReaderService
     Task MarkAsUnreadAsync(string messageId);
     Task RecategorizeAsync(string messageId, string newLabelPath);
     Task<string> CreateReplyDraftAsync(string messageId, string body, bool replyAll);
+    Task<bool> HasRepliedAsync(string threadId, string messageId);
 }

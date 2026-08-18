@@ -19,4 +19,6 @@ public class ProcessedEmailEntity : ITableEntity
     public string? Category { get; set; }
     public bool Suppressed { get; set; }
     public string? GmailThreadId { get; set; }
+    // Awaiting-a-reply-from-Matthew flag; cleared once a sent reply is detected in the thread
+    public bool NeedsReply { get; set; }
 }

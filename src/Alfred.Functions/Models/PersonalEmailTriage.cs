@@ -12,4 +12,6 @@ public class PersonalEmailTriage
     public string? MatchedAttentionRule { get; set; }
     // One-sentence warning when a payment request looks like impersonation/fraud; null when clean
     public string? FraudWarning { get; set; }
+    // True when a real person wrote to Matthew and expects a response from him
+    public bool NeedsReply { get; set; }
 }

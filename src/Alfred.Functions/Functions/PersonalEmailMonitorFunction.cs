@@ -121,7 +121,8 @@ public class PersonalEmailMonitorFunction
                     }
 
                     await _stateService.MarkPersonalEmailProcessedAsync(
-                        email.MessageId, email.Subject, email.SenderName, triage.Summary, triage.Category, triage.Suppressed, email.ThreadId, email.SenderEmail);
+                        email.MessageId, email.Subject, email.SenderName, triage.Summary, triage.Category, triage.Suppressed, email.ThreadId, email.SenderEmail,
+                        needsReply: triage.NeedsReply && !triage.Suppressed);
 
                     await _gmailReader.MarkAsReadAndLabelAsync(email.MessageId, LabelNames.ForPersonal(triage.Category));
 
