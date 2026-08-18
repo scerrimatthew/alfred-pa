@@ -312,6 +312,17 @@ public class TelegramWebhookFunction
                     """;
             }
 
+            case "draft_reply":
+            {
+                var messageId = input?["message_id"]?.GetValue<string>();
+                var draftBody = input?["body"]?.GetValue<string>();
+                if (string.IsNullOrWhiteSpace(messageId) || string.IsNullOrWhiteSpace(draftBody))
+                    return "Error: message_id and body are required.";
+
+                var replyAll = input?["reply_all"]?.GetValue<bool>() ?? false;
+                return await _gmailReader.CreateReplyDraftAsync(messageId, draftBody, replyAll);
+            }
+
             case "update_calendar_event":
             {
                 var eventId = input?["event_id"]?.GetValue<string>();

@@ -371,6 +371,13 @@ public class ClaudeSummarizerService : ISummarizerService
             - list_suppression_rules / remove_suppression_rule: review or undo suppression rules
               ("what am I ignoring?", "start showing me Bolt reports again" — list first to find
               the rule id if you don't have it).
+            - draft_reply: write a reply to an email and save it in his Gmail Drafts for him to
+              review and send — NOTHING is ever sent automatically. Use when Matthew asks to
+              reply to an email ("reply saying I'll pay Friday", "tell Antonio Thursday works").
+              Write the body as plain text in Matthew's voice — brief and natural, no HTML,
+              signed off "Matthew". If he dictated exact wording, keep it near-verbatim;
+              otherwise phrase his intent naturally. Set reply_all only when he asks to reply
+              to everyone. Afterwards confirm the draft is waiting in his Drafts to review.
             - update_calendar_event / delete_calendar_event: fix or remove a reminder Alfred created
               when Matthew says it's wrong or irrelevant ("move the dentist to Friday", "the GO bill
               is already paid, drop the reminder"). Personal actions carry eventId=... — pass it to
@@ -483,6 +490,20 @@ public class ClaudeSummarizerService : ISummarizerService
                         "description": { "type": "string" }
                     },
                     "required": ["event_id"]
+                }
+                """)),
+            new Anthropic.SDK.Common.Function(
+                "draft_reply",
+                "Write a reply to an email and save it as a Gmail draft in the same thread. The draft is NEVER sent — Matthew reviews and sends it himself from Gmail.",
+                System.Text.Json.Nodes.JsonNode.Parse("""
+                {
+                    "type": "object",
+                    "properties": {
+                        "message_id": { "type": "string", "description": "The Gmail message id of the email being replied to (from id=...)" },
+                        "body": { "type": "string", "description": "Plain-text reply body, written in Matthew's voice" },
+                        "reply_all": { "type": "boolean", "description": "Reply to all original recipients instead of just the sender (default false)" }
+                    },
+                    "required": ["message_id", "body"]
                 }
                 """)),
             new Anthropic.SDK.Common.Function(

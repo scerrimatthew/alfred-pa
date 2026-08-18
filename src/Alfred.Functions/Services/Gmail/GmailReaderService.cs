@@ -209,6 +209,96 @@ public partial class GmailReaderService : IGmailReaderService
         _logger.LogInformation("Marked {MessageId} as unread", messageId);
     }
 
+    // Saves a reply as a Gmail draft in the original thread — it is NEVER sent automatically
+    public async Task<string> CreateReplyDraftAsync(string messageId, string body, bool replyAll)
+    {
+        var gmailService = CreateGmailService();
+
+        var getRequest = gmailService.Users.Messages.Get("me", messageId);
+        getRequest.Format = UsersResource.MessagesResource.GetRequest.FormatEnum.Metadata;
+        getRequest.MetadataHeaders = new Google.Apis.Util.Repeatable<string>(
+            ["Subject", "From", "To", "Cc", "Reply-To", "Message-ID", "References"]);
+        var original = await getRequest.ExecuteAsync();
+
+        var headers = original.Payload?.Headers ?? [];
+        string? Header(string name) => headers.FirstOrDefault(
+            h => string.Equals(h.Name, name, StringComparison.OrdinalIgnoreCase))?.Value;
+
+        var replyTo = Header("Reply-To") ?? Header("From")
+            ?? throw new InvalidOperationException("Original email has no sender to reply to.");
+
+        var subject = Header("Subject") ?? "(no subject)";
+        if (!subject.StartsWith("Re:", StringComparison.OrdinalIgnoreCase))
+            subject = $"Re: {subject}";
+
+        var originalMessageId = Header("Message-ID");
+        var references = Header("References");
+
+        var mime = new StringBuilder();
+        mime.Append("To: ").Append(replyTo).Append("\r\n");
+
+        if (replyAll)
+        {
+            var ownAddress = await GetOwnAddressAsync(gmailService);
+            var replyToEmail = ExtractEmail(replyTo);
+            var ccList = SplitAddresses($"{Header("To")}, {Header("Cc")}")
+                .Where(a =>
+                {
+                    var addr = ExtractEmail(a);
+                    return !addr.Equals(ownAddress, StringComparison.OrdinalIgnoreCase)
+                        && !addr.Equals(replyToEmail, StringComparison.OrdinalIgnoreCase);
+                })
+                .ToList();
+            if (ccList.Count > 0)
+                mime.Append("Cc: ").Append(string.Join(", ", ccList)).Append("\r\n");
+        }
+
+        mime.Append("Subject: ").Append(EncodeHeaderValue(subject)).Append("\r\n");
+        if (originalMessageId is not null)
+        {
+            mime.Append("In-Reply-To: ").Append(originalMessageId).Append("\r\n");
+            mime.Append("References: ")
+                .Append(references is not null ? $"{references} {originalMessageId}" : originalMessageId)
+                .Append("\r\n");
+        }
+        mime.Append("MIME-Version: 1.0\r\n");
+        mime.Append("Content-Type: text/plain; charset=\"UTF-8\"\r\n");
+        mime.Append("Content-Transfer-Encoding: base64\r\n");
+        mime.Append("\r\n");
+        mime.Append(Convert.ToBase64String(Encoding.UTF8.GetBytes(body), Base64FormattingOptions.InsertLineBreaks));
+
+        var raw = Convert.ToBase64String(Encoding.UTF8.GetBytes(mime.ToString()))
+            .Replace('+', '-').Replace('/', '_').TrimEnd('=');
+
+        var draft = await gmailService.Users.Drafts.Create(
+            new Draft { Message = new Message { Raw = raw, ThreadId = original.ThreadId } }, "me").ExecuteAsync();
+
+        _logger.LogInformation("Created reply draft {DraftId} to {To}: {Subject}", draft.Id, replyTo, subject);
+
+        return $"Draft reply to {replyTo} saved in Gmail Drafts (subject \"{subject}\"), in the original thread: "
+            + GmailLinks.ForThread(original.ThreadId ?? messageId);
+    }
+
+    private string? _ownAddressCache;
+
+    private async Task<string> GetOwnAddressAsync(GmailService gmailService)
+    {
+        if (_ownAddressCache is not null)
+            return _ownAddressCache;
+
+        var profile = await gmailService.Users.GetProfile("me").ExecuteAsync();
+        _ownAddressCache = profile.EmailAddress ?? "";
+        return _ownAddressCache;
+    }
+
+    private static IEnumerable<string> SplitAddresses(string headerValue) =>
+        headerValue.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+
+    private static string EncodeHeaderValue(string value) =>
+        value.All(char.IsAscii)
+            ? value
+            : $"=?utf-8?B?{Convert.ToBase64String(Encoding.UTF8.GetBytes(value))}?=";
+
     public async Task RecategorizeAsync(string messageId, string newLabelPath)
     {
         var gmailService = CreateGmailService();
