@@ -11,6 +11,7 @@ public class TableStorageStateService : IStateService
     private const string CalendarEventsTable = "CalendarEvents";
     private const string SuppressionRulesTable = "SuppressionRules";
     private const string SnoozedEmailsTable = "SnoozedEmails";
+    private const string AttentionRulesTable = "AttentionRules";
     private const string ChatHistoryTable = "ChatHistory";
     private const string SchoolPartition = "emails";
     private const string PersonalPartition = "personal";
@@ -247,6 +248,56 @@ public class TableStorageStateService : IStateService
         {
             await tableClient.DeleteEntityAsync(RulesPartition, ruleId);
             _logger.LogInformation("Deleted suppression rule {RuleId}", ruleId);
+        }
+        catch (RequestFailedException ex) when (ex.Status == 404)
+        {
+            // Already gone, ignore
+        }
+    }
+
+    public async Task<List<AttentionRuleEntity>> GetAttentionRulesAsync()
+    {
+        var tableClient = _tableServiceClient.GetTableClient(AttentionRulesTable);
+        await tableClient.CreateIfNotExistsAsync();
+
+        var results = new List<AttentionRuleEntity>();
+        var query = tableClient.QueryAsync<AttentionRuleEntity>(e => e.PartitionKey == RulesPartition);
+
+        await foreach (var entity in query)
+        {
+            results.Add(entity);
+        }
+
+        return results;
+    }
+
+    public async Task SaveAttentionRuleAsync(string ruleId, string pattern, string? exampleSender, string? exampleSubject)
+    {
+        var tableClient = _tableServiceClient.GetTableClient(AttentionRulesTable);
+        await tableClient.CreateIfNotExistsAsync();
+
+        var entity = new AttentionRuleEntity
+        {
+            RowKey = ruleId,
+            Pattern = pattern,
+            ExampleSender = exampleSender,
+            ExampleSubject = exampleSubject,
+            CreatedAt = DateTimeOffset.UtcNow
+        };
+
+        await tableClient.UpsertEntityAsync(entity);
+        _logger.LogInformation("Saved attention rule {RuleId}: {Pattern}", ruleId, pattern);
+    }
+
+    public async Task DeleteAttentionRuleAsync(string ruleId)
+    {
+        var tableClient = _tableServiceClient.GetTableClient(AttentionRulesTable);
+        await tableClient.CreateIfNotExistsAsync();
+
+        try
+        {
+            await tableClient.DeleteEntityAsync(RulesPartition, ruleId);
+            _logger.LogInformation("Deleted attention rule {RuleId}", ruleId);
         }
         catch (RequestFailedException ex) when (ex.Status == 404)
         {

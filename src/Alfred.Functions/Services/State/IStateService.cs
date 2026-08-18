@@ -17,6 +17,9 @@ public interface IStateService
     Task<List<SuppressionRuleEntity>> GetSuppressionRulesAsync();
     Task SaveSuppressionRuleAsync(string ruleId, string pattern, string? exampleSender, string? exampleSubject);
     Task DeleteSuppressionRuleAsync(string ruleId);
+    Task<List<AttentionRuleEntity>> GetAttentionRulesAsync();
+    Task SaveAttentionRuleAsync(string ruleId, string pattern, string? exampleSender, string? exampleSubject);
+    Task DeleteAttentionRuleAsync(string ruleId);
     Task<List<ProcessedEmailEntity>> GetEmailsSinceAsync(DateTimeOffset since);
     Task<List<ProcessedEmailEntity>> GetPersonalEmailsSinceAsync(DateTimeOffset since);
     Task SaveChatTurnAsync(long chatId, string question, string answer);

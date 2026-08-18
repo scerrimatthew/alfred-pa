@@ -9,4 +9,5 @@ public class PersonalEmailTriage
     public List<CalendarEventInfo> CalendarEvents { get; set; } = [];
     public bool Suppressed { get; set; }
     public string? MatchedRule { get; set; }
+    public string? MatchedAttentionRule { get; set; }
 }

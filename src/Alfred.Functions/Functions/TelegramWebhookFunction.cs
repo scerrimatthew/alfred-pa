@@ -422,6 +422,41 @@ public class TelegramWebhookFunction
                     """;
             }
 
+            case "add_attention_rule":
+            {
+                var pattern = input?["pattern"]?.GetValue<string>();
+                if (string.IsNullOrWhiteSpace(pattern))
+                    return "Error: no pattern provided.";
+
+                var ruleId = Guid.NewGuid().ToString("N")[..8];
+                await _stateService.SaveAttentionRuleAsync(
+                    ruleId,
+                    pattern,
+                    input?["example_sender"]?.GetValue<string>(),
+                    input?["example_subject"]?.GetValue<string>());
+                return $"Attention rule {ruleId} saved: {pattern}";
+            }
+
+            case "list_attention_rules":
+            {
+                var rules = await _stateService.GetAttentionRulesAsync();
+                if (rules.Count == 0)
+                    return "No attention rules are active.";
+
+                return string.Join("\n", rules.OrderBy(r => r.CreatedAt).Select(r =>
+                    $"[{r.RowKey}] {r.Pattern} (added {r.CreatedAt:d MMM yyyy})"));
+            }
+
+            case "remove_attention_rule":
+            {
+                var ruleId = input?["rule_id"]?.GetValue<string>();
+                if (string.IsNullOrWhiteSpace(ruleId))
+                    return "Error: no rule_id provided.";
+
+                await _stateService.DeleteAttentionRuleAsync(ruleId);
+                return $"Attention rule {ruleId} removed.";
+            }
+
             case "snooze_email":
             {
                 var messageId = input?["message_id"]?.GetValue<string>();

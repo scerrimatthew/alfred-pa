@@ -51,7 +51,7 @@ public class ClaudeSummarizerService : ISummarizerService
         return ParseDigestResponse(responseText);
     }
 
-    public async Task<PersonalEmailTriage> TriagePersonalEmailAsync(SchoolEmail email, List<SuppressionRuleEntity> suppressionRules)
+    public async Task<PersonalEmailTriage> TriagePersonalEmailAsync(SchoolEmail email, List<SuppressionRuleEntity> suppressionRules, List<AttentionRuleEntity> attentionRules)
     {
         var client = CreateClient();
 
@@ -63,7 +63,7 @@ public class ClaudeSummarizerService : ISummarizerService
                 docsWithContent.Select(d => $"[{d.Title}]\n{d.ExtractedText}"))
             : "";
 
-        var prompt = BuildTriagePrompt(email, today, documentContent, suppressionRules);
+        var prompt = BuildTriagePrompt(email, today, documentContent, suppressionRules, attentionRules);
 
         var parameters = new MessageParameters
         {
@@ -371,6 +371,12 @@ public class ClaudeSummarizerService : ISummarizerService
             - list_suppression_rules / remove_suppression_rule: review or undo suppression rules
               ("what am I ignoring?", "start showing me Bolt reports again" — list first to find
               the rule id if you don't have it).
+            - add_attention_rule: the OPPOSITE of suppression — when Matthew asks to always be
+              alerted about a kind of email ("always tell me when the bank writes", "never miss
+              anything about the car insurance"). Write the pattern as a generalized description,
+              same as suppression rules. Matching emails always notify, even if a suppression
+              rule also matches.
+            - list_attention_rules / remove_attention_rule: review or undo attention rules.
             - snooze_email: when Matthew wants to deal with an email later ("remind me about
               this tomorrow", "snooze the GO bill till Friday"), schedule a reminder. Compute
               remind_at ("yyyy-MM-dd HH:mm", Malta time) from his words — a bare day means
@@ -496,6 +502,38 @@ public class ClaudeSummarizerService : ISummarizerService
                         "description": { "type": "string" }
                     },
                     "required": ["event_id"]
+                }
+                """)),
+            new Anthropic.SDK.Common.Function(
+                "add_attention_rule",
+                "Create a rule so Matthew is ALWAYS notified about emails matching a recurring pattern, overriding the normal triage bar and any suppression rule. The pattern must be a generalized natural-language description.",
+                System.Text.Json.Nodes.JsonNode.Parse("""
+                {
+                    "type": "object",
+                    "properties": {
+                        "pattern": { "type": "string", "description": "Generalized description of what always warrants attention, e.g. \"Any email from HSBC about the mortgage\"" },
+                        "example_sender": { "type": "string", "description": "Sender of the example email, if known" },
+                        "example_subject": { "type": "string", "description": "Subject of the example email, if known" }
+                    },
+                    "required": ["pattern"]
+                }
+                """)),
+            new Anthropic.SDK.Common.Function(
+                "list_attention_rules",
+                "List the active attention (always-notify) rules with their ids.",
+                System.Text.Json.Nodes.JsonNode.Parse("""
+                { "type": "object", "properties": {} }
+                """)),
+            new Anthropic.SDK.Common.Function(
+                "remove_attention_rule",
+                "Delete an attention rule so those emails go back to normal triage.",
+                System.Text.Json.Nodes.JsonNode.Parse("""
+                {
+                    "type": "object",
+                    "properties": {
+                        "rule_id": { "type": "string", "description": "The id of the rule to remove (from list_attention_rules)" }
+                    },
+                    "required": ["rule_id"]
                 }
                 """)),
             new Anthropic.SDK.Common.Function(
@@ -786,12 +824,32 @@ public class ClaudeSummarizerService : ISummarizerService
             """;
     }
 
-    private static string BuildTriagePrompt(SchoolEmail email, string today, string documentContent, List<SuppressionRuleEntity> suppressionRules)
+    private static string BuildTriagePrompt(SchoolEmail email, string today, string documentContent, List<SuppressionRuleEntity> suppressionRules, List<AttentionRuleEntity> attentionRules)
     {
         // Cap the body — personal inbox emails (marketing, long threads) can be huge after HTML stripping
         var body = email.Body.Length > 8000
             ? email.Body[..8000] + "\n[... truncated]"
             : email.Body;
+
+        var attentionSection = attentionRules.Count > 0
+            ? "\n\nATTENTION RULES — Matthew has explicitly asked to ALWAYS be notified about emails matching these patterns:\n"
+              + string.Join("\n", attentionRules.Select(r =>
+              {
+                  var example = r.ExampleSender is not null || r.ExampleSubject is not null
+                      ? $" (example: from \"{r.ExampleSender}\", subject \"{r.ExampleSubject}\")"
+                      : "";
+                  return $"- [{r.RowKey}] {r.Pattern}{example}";
+              }))
+              + """
+
+
+              Apply these rules with REASONING, not literal matching. When an email matches one,
+              set "requiresAttention" to true regardless of the usual bar, and put the rule id in
+              "matchedAttentionRule". Attention rules WIN over suppression rules: if both match,
+              notify anyway (suppressed = false). Do not stretch a rule to cover genuinely
+              different emails.
+              """
+            : "";
 
         var rulesSection = suppressionRules.Count > 0
             ? "\n\nSUPPRESSION RULES — Matthew has explicitly asked NOT to be notified about emails matching these patterns:\n"
@@ -828,7 +886,7 @@ public class ClaudeSummarizerService : ISummarizerService
             - If the resolved date has already passed, say so plainly ("this was for this morning
               at 08:00") and do NOT create calendar events for it.
 
-            Triage the email below. Decide whether it warrants Matthew's attention.{rulesSection}
+            Triage the email below. Decide whether it warrants Matthew's attention.{rulesSection}{attentionSection}
 
             The bar for attention: would a sharp human PA actually interrupt Matthew's day for this?
             Most emails don't clear that bar. Interrupt him for:
@@ -858,6 +916,8 @@ public class ClaudeSummarizerService : ISummarizerService
             1. "requiresAttention": boolean, per the bar above. When unsure, prefer FALSE — the
                email stays in Gmail and the digest either way; a wrongly-silenced email costs
                little, but constant interruptions make Matthew ignore the ones that matter.
+               Exception: when an attention rule matches, this is always true. Also provide
+               "matchedAttentionRule" with the matching attention rule id, or null.
 
             2. "category": one of "invoice", "payment-request", "personal-reply", "appointment",
                "financial", "official", "security", "delivery", "notification", "other".
@@ -926,9 +986,14 @@ public class ClaudeSummarizerService : ISummarizerService
             var requiresAttention = root.TryGetProperty("requiresAttention", out var raProp)
                 && raProp.ValueKind == JsonValueKind.True;
 
+            var matchedAttentionRule = root.TryGetProperty("matchedAttentionRule", out var marProp) && marProp.ValueKind == JsonValueKind.String
+                ? marProp.GetString()
+                : null;
+
             return new PersonalEmailTriage
             {
-                RequiresAttention = requiresAttention,
+                // An attention rule match always notifies and beats any suppression rule
+                RequiresAttention = requiresAttention || matchedAttentionRule is not null,
                 Category = root.TryGetProperty("category", out var catProp)
                     ? catProp.GetString() ?? "other"
                     : "other",
@@ -939,11 +1004,13 @@ public class ClaudeSummarizerService : ISummarizerService
                     ? tmProp.GetString() ?? ""
                     : "",
                 CalendarEvents = ParseCalendarEvents(root),
-                Suppressed = root.TryGetProperty("suppressed", out var supProp)
+                Suppressed = matchedAttentionRule is null
+                    && root.TryGetProperty("suppressed", out var supProp)
                     && supProp.ValueKind == JsonValueKind.True,
                 MatchedRule = root.TryGetProperty("matchedRule", out var mrProp) && mrProp.ValueKind == JsonValueKind.String
                     ? mrProp.GetString()
-                    : null
+                    : null,
+                MatchedAttentionRule = matchedAttentionRule
             };
         }
         catch (JsonException)

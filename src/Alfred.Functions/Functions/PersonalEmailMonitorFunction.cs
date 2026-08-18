@@ -61,6 +61,7 @@ public class PersonalEmailMonitorFunction
             }
 
             var suppressionRules = await _stateService.GetSuppressionRulesAsync();
+            var attentionRules = await _stateService.GetAttentionRulesAsync();
 
             foreach (var email in newEmails)
             {
@@ -68,7 +69,7 @@ public class PersonalEmailMonitorFunction
                 {
                     _logger.LogInformation("Triaging personal email: {Subject}", email.Subject);
 
-                    var triage = await _summarizer.TriagePersonalEmailAsync(email, suppressionRules);
+                    var triage = await _summarizer.TriagePersonalEmailAsync(email, suppressionRules, attentionRules);
 
                     if (triage.Suppressed)
                     {
