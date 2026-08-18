@@ -14,6 +14,8 @@ public class AlfredOptions
     public int SchoolDaysAhead { get; set; } = 3;
     public string TelegramWebhookSecret { get; set; } = string.Empty;
     public int ChatLookbackDays { get; set; } = 30;
+    public int ChatHistoryMaxTurns { get; set; } = 5;
+    public int ChatHistoryMaxAgeMinutes { get; set; } = 60;
     public string AllowedTelegramUserIds { get; set; } = string.Empty;
     public string PersonalTelegramChatId { get; set; } = string.Empty;
     public bool NotifyAllPersonalEmails { get; set; } = false;

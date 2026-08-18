@@ -14,6 +14,9 @@ public interface IStateService
     Task DeleteSuppressionRuleAsync(string ruleId);
     Task<List<ProcessedEmailEntity>> GetEmailsSinceAsync(DateTimeOffset since);
     Task<List<ProcessedEmailEntity>> GetPersonalEmailsSinceAsync(DateTimeOffset since);
+    Task SaveChatTurnAsync(long chatId, string question, string answer);
+    Task<List<ChatTurnEntity>> GetRecentChatTurnsAsync(long chatId, DateTimeOffset since, int maxCount);
+    Task ClearChatTurnsAsync(long chatId);
     Task<CalendarEventEntity?> GetCalendarEventMappingAsync(string subjectHash);
     Task SaveCalendarEventMappingAsync(string subjectHash, string googleEventId, string emailId, string title, DateTimeOffset eventDate);
     Task DeleteCalendarEventMappingAsync(string subjectHash);

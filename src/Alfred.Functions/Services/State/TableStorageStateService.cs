@@ -10,6 +10,7 @@ public class TableStorageStateService : IStateService
     private const string ProcessedEmailsTable = "ProcessedEmails";
     private const string CalendarEventsTable = "CalendarEvents";
     private const string SuppressionRulesTable = "SuppressionRules";
+    private const string ChatHistoryTable = "ChatHistory";
     private const string SchoolPartition = "emails";
     private const string PersonalPartition = "personal";
     private const string RulesPartition = "rules";
@@ -164,6 +165,71 @@ public class TableStorageStateService : IStateService
         {
             // Already gone, ignore
         }
+    }
+
+    public async Task SaveChatTurnAsync(long chatId, string question, string answer)
+    {
+        var tableClient = _tableServiceClient.GetTableClient(ChatHistoryTable);
+        await tableClient.CreateIfNotExistsAsync();
+
+        var now = DateTimeOffset.UtcNow;
+        var partition = chatId.ToString();
+        var entity = new ChatTurnEntity
+        {
+            PartitionKey = partition,
+            RowKey = (long.MaxValue - now.UtcTicks).ToString("D19"),
+            Question = question,
+            Answer = answer,
+            AskedAt = now
+        };
+
+        await tableClient.UpsertEntityAsync(entity);
+
+        // Prune turns older than a day so the table never accumulates
+        var cutoff = now.AddDays(-1);
+        var stale = tableClient.QueryAsync<ChatTurnEntity>(
+            e => e.PartitionKey == partition && e.AskedAt < cutoff);
+        await foreach (var old in stale)
+        {
+            await tableClient.DeleteEntityAsync(old.PartitionKey, old.RowKey);
+        }
+    }
+
+    public async Task<List<ChatTurnEntity>> GetRecentChatTurnsAsync(long chatId, DateTimeOffset since, int maxCount)
+    {
+        var tableClient = _tableServiceClient.GetTableClient(ChatHistoryTable);
+        await tableClient.CreateIfNotExistsAsync();
+
+        var partition = chatId.ToString();
+        var results = new List<ChatTurnEntity>();
+        var query = tableClient.QueryAsync<ChatTurnEntity>(
+            e => e.PartitionKey == partition && e.AskedAt >= since);
+
+        // RowKey is inverted ticks, so entities arrive newest first
+        await foreach (var entity in query)
+        {
+            results.Add(entity);
+            if (results.Count >= maxCount)
+                break;
+        }
+
+        results.Reverse(); // chronological order for the prompt
+        return results;
+    }
+
+    public async Task ClearChatTurnsAsync(long chatId)
+    {
+        var tableClient = _tableServiceClient.GetTableClient(ChatHistoryTable);
+        await tableClient.CreateIfNotExistsAsync();
+
+        var partition = chatId.ToString();
+        var query = tableClient.QueryAsync<ChatTurnEntity>(e => e.PartitionKey == partition);
+        await foreach (var entity in query)
+        {
+            await tableClient.DeleteEntityAsync(entity.PartitionKey, entity.RowKey);
+        }
+
+        _logger.LogInformation("Cleared chat history for chat {ChatId}", chatId);
     }
 
     public async Task<CalendarEventEntity?> GetCalendarEventMappingAsync(string subjectHash)

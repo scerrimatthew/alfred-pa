@@ -132,7 +132,8 @@ public class ClaudeSummarizerService : ISummarizerService
     public async Task<string> AnswerQuestionAsync(
         string question,
         List<ProcessedEmailEntity> recentEmails,
-        List<Google.Apis.Calendar.v3.Data.Event> upcomingEvents)
+        List<Google.Apis.Calendar.v3.Data.Event> upcomingEvents,
+        List<ChatTurnEntity> recentTurns)
     {
         var client = CreateClient();
 
@@ -168,6 +169,10 @@ public class ClaudeSummarizerService : ISummarizerService
             Do not mention where the information comes from. Do not reference "the data", emails, or calendar sources. Just answer as if you know it.
             If you genuinely don't have the information, say you're not sure.
 
+            You may be shown the recent back-and-forth of this chat. Use it only to resolve
+            follow-ups ("and what about Tuesday?"); if the new question stands on its own,
+            answer it fresh and do not force a connection to earlier messages.
+
             When relevant, include links to documents using <a href="url">title</a> format.
 
             Format your reply using Telegram HTML:
@@ -183,7 +188,7 @@ public class ClaudeSummarizerService : ISummarizerService
             ## CALENDAR EVENTS
             {eventsList}
 
-            ## QUESTION
+            {FormatConversationSection(recentTurns)}## QUESTION
             {question}
             """;
 
@@ -282,6 +287,7 @@ public class ClaudeSummarizerService : ISummarizerService
         List<Google.Apis.Calendar.v3.Data.Event> schoolEvents,
         List<ProcessedEmailEntity> personalEmails,
         List<Google.Apis.Calendar.v3.Data.Event> personalActions,
+        List<ChatTurnEntity> recentTurns,
         Func<string, System.Text.Json.Nodes.JsonNode?, Task<string>> executeTool)
     {
         var client = CreateClient();
@@ -336,6 +342,10 @@ public class ClaudeSummarizerService : ISummarizerService
             Do not mention "the data" or where information comes from. Just answer.
             If you genuinely don't have the information, say you're not sure.
 
+            You may be shown the recent back-and-forth of this chat. Use it only to resolve
+            follow-ups ("and what about Tuesday?", "delete that one"); if the new question
+            stands on its own, answer it fresh and do not force a connection to earlier messages.
+
             You can also ACT on Matthew's personal emails when he asks:
             - mark_unread: mark an email as unread in Gmail (e.g. "mark that invoice as unread")
             - recategorize_email: change an email's category label (e.g. "that's not an invoice, it's a delivery")
@@ -380,7 +390,7 @@ public class ClaudeSummarizerService : ISummarizerService
             ## PERSONAL ACTIONS (Alfred-created calendar entries)
             {personalActionsList}
 
-            ## QUESTION
+            {FormatConversationSection(recentTurns)}## QUESTION
             {question}
             """;
 
@@ -527,6 +537,24 @@ public class ClaudeSummarizerService : ISummarizerService
         }
 
         return "I tried to help but got stuck in a loop of actions — please check Gmail directly.";
+    }
+
+    private static string FormatConversationSection(List<ChatTurnEntity> recentTurns)
+    {
+        if (recentTurns.Count == 0)
+            return string.Empty;
+
+        var maltaTz = TimeZoneInfo.FindSystemTimeZoneById("Europe/Malta");
+        var lines = recentTurns.Select(t =>
+        {
+            var time = TimeZoneInfo.ConvertTime(t.AskedAt, maltaTz).ToString("ddd HH:mm");
+            return $"[{time}] Q: {t.Question}\n[{time}] A: {t.Answer}";
+        });
+
+        return "## RECENT CONVERSATION (context only — the question below may be unrelated; "
+            + "ignore this section if it isn't relevant. The email and calendar data above is "
+            + "current and takes priority over anything said here)\n"
+            + string.Join("\n", lines) + "\n\n";
     }
 
     private static AnthropicClient CreateClient()

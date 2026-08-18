@@ -95,10 +95,21 @@ public class TelegramWebhookFunction
                 return req.CreateResponse(System.Net.HttpStatusCode.OK);
             }
 
+            var command = question.Trim();
+            if (command.Equals("/new", StringComparison.OrdinalIgnoreCase) ||
+                command.Equals("/reset", StringComparison.OrdinalIgnoreCase))
+            {
+                await _stateService.ClearChatTurnsAsync(chatId);
+                await _notificationService.SendMessageAsync(chatId, "Fresh start — I've cleared our recent conversation.");
+                return req.CreateResponse(System.Net.HttpStatusCode.OK);
+            }
+
             // Gather context in parallel
             var lookbackSince = DateTimeOffset.UtcNow.AddDays(-_options.ChatLookbackDays);
             var emailsTask = _stateService.GetEmailsSinceAsync(lookbackSince);
             var eventsTask = _calendarService.GetUpcomingEventsAsync(_options.ChatLookbackDays);
+            var historySince = DateTimeOffset.UtcNow.AddMinutes(-_options.ChatHistoryMaxAgeMinutes);
+            var historyTask = _stateService.GetRecentChatTurnsAsync(chatId, historySince, _options.ChatHistoryMaxTurns);
 
             string answer;
             if (isPersonalChat)
@@ -106,10 +117,10 @@ public class TelegramWebhookFunction
                 var personalEmailsTask = _stateService.GetPersonalEmailsSinceAsync(lookbackSince);
                 var personalActionsTask = _calendarService.GetUpcomingPersonalEventsAsync(_options.ChatLookbackDays);
 
-                await Task.WhenAll(emailsTask, eventsTask, personalEmailsTask, personalActionsTask);
+                await Task.WhenAll(emailsTask, eventsTask, historyTask, personalEmailsTask, personalActionsTask);
 
-                _logger.LogInformation("Personal context loaded: {School} school + {Personal} personal emails, {Actions} actions",
-                    emailsTask.Result.Count, personalEmailsTask.Result.Count, personalActionsTask.Result.Count);
+                _logger.LogInformation("Personal context loaded: {School} school + {Personal} personal emails, {Actions} actions, {Turns} chat turns",
+                    emailsTask.Result.Count, personalEmailsTask.Result.Count, personalActionsTask.Result.Count, historyTask.Result.Count);
 
                 answer = await _summarizerService.AnswerPersonalQuestionAsync(
                     question,
@@ -117,19 +128,30 @@ public class TelegramWebhookFunction
                     eventsTask.Result,
                     personalEmailsTask.Result,
                     personalActionsTask.Result,
+                    historyTask.Result,
                     ExecuteEmailToolAsync);
             }
             else
             {
-                await Task.WhenAll(emailsTask, eventsTask);
+                await Task.WhenAll(emailsTask, eventsTask, historyTask);
 
-                _logger.LogInformation("Context loaded: {EmailCount} emails, {EventCount} events",
-                    emailsTask.Result.Count, eventsTask.Result.Count);
+                _logger.LogInformation("Context loaded: {EmailCount} emails, {EventCount} events, {Turns} chat turns",
+                    emailsTask.Result.Count, eventsTask.Result.Count, historyTask.Result.Count);
 
-                answer = await _summarizerService.AnswerQuestionAsync(question, emailsTask.Result, eventsTask.Result);
+                answer = await _summarizerService.AnswerQuestionAsync(question, emailsTask.Result, eventsTask.Result, historyTask.Result);
             }
 
             await _notificationService.SendMessageAsync(chatId, answer);
+
+            try
+            {
+                await _stateService.SaveChatTurnAsync(chatId, question, TrimAnswerForHistory(answer));
+            }
+            catch (Exception ex)
+            {
+                // The answer already went out — a history write failure shouldn't surface as a webhook error
+                _logger.LogWarning(ex, "Failed to save chat turn for chat {ChatId}", chatId);
+            }
         }
         catch (Exception ex)
         {
@@ -277,6 +299,14 @@ public class TelegramWebhookFunction
             default:
                 return $"Error: unknown tool {toolName}.";
         }
+    }
+
+    // History keeps a de-formatted, capped copy of each answer: enough for follow-ups,
+    // small enough that stale detail can't crowd out the live email/calendar context
+    private static string TrimAnswerForHistory(string answer)
+    {
+        var plain = System.Text.RegularExpressions.Regex.Replace(answer, "<[^>]+>", "").Trim();
+        return plain.Length <= 700 ? plain : plain[..700] + "…";
     }
 
     private bool IsUserAllowed(long userId)
