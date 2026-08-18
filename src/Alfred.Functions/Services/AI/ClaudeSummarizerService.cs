@@ -232,18 +232,19 @@ public class ClaudeSummarizerService : ISummarizerService
             Write a short evening check-in the way a human PA would text a wrap-up — conversational,
             no section headers, no separator lines, no report structure.
 
-            Shape it roughly as: a one-line opener, then what's coming up (every action and
+            Shape it roughly as: a one-line opener starting with the 🤖 emoji, then what's coming up (every action and
             deadline from the data with its date — flag anything due tomorrow or overdue first,
             and never skip an event), then anything from today's emails worth knowing in a
             sentence or two. When listing more than two upcoming items, compact • bullets are
             fine; otherwise keep it in prose.
 
             Tone example:
-            "Evening! Two things on the radar: the <b>GO bill (€45.20)</b> is due <b>Wednesday</b>,
+            "🤖 Evening! Two things on the radar: the <b>GO bill (€45.20)</b> is due <b>Wednesday</b>,
             and you've got the dentist <b>Friday at 14:00</b>. Today was quiet otherwise — just a
             delivery notice from Wolt I filed away."
 
             Rules:
+            - Begin the greeting line with the 🤖 emoji, followed by a space
             - Bold only the facts that matter (amounts, dates, names)
             - Only use <b> and <a href=""> tags; do not escape characters
             - Keep it glanceable — a few lines, not a report
