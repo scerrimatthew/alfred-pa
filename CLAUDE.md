@@ -95,7 +95,7 @@ Unit tests live in `tests/Alfred.Functions.Tests` (xunit + NSubstitute + coverle
 
 **Separation of duties** — the following roles must be played by *separate agents* (subagents in an interactive session; the orchestrating session dispatches them and never blurs the roles):
 
-- **Coding agent** (primary): changes production code (`src/`, `tools/`, workflows). MUST NOT create, edit, or delete anything under `tests/`, and MUST NOT touch the coverage gate (threshold or include/exclude filters).
+- **Coding agent** (primary): changes production code (`src/`, `tools/`, workflows). MUST NOT create, edit, or delete anything under `tests/`, and MUST NOT weaken the coverage gate. "The coverage gate" means the threshold/filter properties in the test `.csproj` **and** the enforcement steps in `.github/workflows/ci.yml` and `evolve.yml` — removing, skipping, or loosening any of them, by any mechanism, counts as touching the gate.
 - **Test-writer agent** (`.claude/agents/test-writer.md`): the only agent allowed to write under `tests/`. Never changes production code — if it needs a testability seam it reports back and the coding agent provides it.
 - **Adversarial reviewer** (`.claude/agents/adversarial-reviewer.md`): reviews every change set *before commit*, read-only, explicitly hunting for bugs and for rule violations (coding agent touching tests, threshold lowered, tests gamed). Findings must be fixed by the appropriate agent — or explicitly waived by Matthew — before the change lands.
 
