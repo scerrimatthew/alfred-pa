@@ -402,6 +402,13 @@ public class ClaudeSummarizerService : ISummarizerService
               signed off "Matthew". If he dictated exact wording, keep it near-verbatim;
               otherwise phrase his intent naturally. Set reply_all only when he asks to reply
               to everyone. Afterwards confirm the draft is waiting in his Drafts to review.
+            - create_calendar_event: add a new reminder to Matthew's personal calendar whenever he
+              asks you to remember a date ("remind me to pay this by the 31st", "put the dentist
+              appointment in for Tuesday at 9"). Never say you can't create one, and never repurpose
+              an unrelated existing reminder instead. Use a short, specific title, put the useful
+              detail (amount, reference number, IBAN, who to pay) in the description, and leave it
+              all-day unless a time was given. Check the personal actions listed below first so you
+              don't add one that's already there.
             - update_calendar_event / delete_calendar_event: fix or remove a reminder Alfred created
               when Matthew says it's wrong or irrelevant ("move the dentist to Friday", "the GO bill
               is already paid, drop the reminder"). Personal actions carry eventId=... — pass it to
@@ -499,6 +506,22 @@ public class ClaudeSummarizerService : ISummarizerService
                         "rule_id": { "type": "string", "description": "The id of the rule to remove (from list_suppression_rules)" }
                     },
                     "required": ["rule_id"]
+                }
+                """)),
+            new Anthropic.SDK.Common.Function(
+                "create_calendar_event",
+                "Add a new reminder/event to Matthew's personal calendar. Use whenever he asks to be reminded of a date or deadline.",
+                System.Text.Json.Nodes.JsonNode.Parse("""
+                {
+                    "type": "object",
+                    "properties": {
+                        "title": { "type": "string", "description": "Short, specific title, e.g. \"Pay Aeris invoice #0005713\"" },
+                        "date": { "type": "string", "description": "Date of the event or deadline, yyyy-MM-dd" },
+                        "start_time": { "type": "string", "description": "Start time, HH:mm (omit for an all-day reminder)" },
+                        "end_time": { "type": "string", "description": "End time, HH:mm (defaults to an hour after the start)" },
+                        "description": { "type": "string", "description": "The useful detail: amount, reference number, payee, IBAN, link" }
+                    },
+                    "required": ["title", "date"]
                 }
                 """)),
             new Anthropic.SDK.Common.Function(
