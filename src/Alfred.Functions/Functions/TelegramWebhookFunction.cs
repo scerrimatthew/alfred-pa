@@ -312,6 +312,24 @@ public class TelegramWebhookFunction
                     """;
             }
 
+            case "create_calendar_event":
+            {
+                var title = input?["title"]?.GetValue<string>();
+                if (string.IsNullOrWhiteSpace(title))
+                    return "Error: no title provided.";
+
+                if (!DateTime.TryParse(input?["date"]?.GetValue<string>(), out var eventDate))
+                    return "Error: a valid date (yyyy-MM-dd) is required.";
+
+                TimeSpan? startTime = TimeSpan.TryParse(input?["start_time"]?.GetValue<string>(), out var st) ? st : null;
+                TimeSpan? endTime = TimeSpan.TryParse(input?["end_time"]?.GetValue<string>(), out var et) ? et : null;
+
+                await _calendarService.CreatePersonalEventAsync(
+                    title, eventDate, startTime, endTime,
+                    input?["description"]?.GetValue<string>());
+                return $"Created calendar event: {title} on {eventDate:ddd d MMM yyyy}.";
+            }
+
             case "update_calendar_event":
             {
                 var eventId = input?["event_id"]?.GetValue<string>();

@@ -19,6 +19,9 @@ public class GoogleCalendarService : ICalendarService
     // How far ahead of "now" a reminder is placed when its ideal time has already passed
     private const int ImminentReminderLeadMinutes = 5;
 
+    // Stand-in email id for events Matthew asked for in chat rather than ones derived from an email
+    private const string ChatOriginId = "chat";
+
     private readonly AlfredOptions _alfredOptions;
     private readonly GoogleOptions _googleOptions;
     private readonly IStateService _stateService;
@@ -101,6 +104,36 @@ public class GoogleCalendarService : ICalendarService
 
         var response = await request.ExecuteAsync();
         return response.Items?.ToList() ?? [];
+    }
+
+    public async Task<string> CreatePersonalEventAsync(string title, DateTime date, TimeSpan? startTime, TimeSpan? endTime, string? description)
+    {
+        var calendarService = CreateCalendarService();
+
+        // Google rejects an end that isn't after the start; fall back to the default one-hour block
+        if (startTime is not null && endTime <= startTime) endTime = null;
+
+        var eventInfo = new CalendarEventInfo
+        {
+            Title = title,
+            Description = description ?? string.Empty,
+            Date = date.Date,
+            StartTime = startTime,
+            EndTime = endTime,
+            Action = CalendarEventAction.Create
+        };
+
+        var created = await calendarService.Events
+            .Insert(BuildCalendarEvent(eventInfo, tagAsAlfred: true), _alfredOptions.PersonalCalendarId)
+            .ExecuteAsync();
+
+        // Recorded like an email-derived event, so a later triage of the same subject dedupes against it
+        await _stateService.SaveCalendarEventMappingAsync(
+            ComputeHash($"{title}_{date:yyyy-MM-dd}"), created.Id, ChatOriginId, title,
+            new DateTimeOffset(date.Date));
+
+        _logger.LogInformation("Created personal event from chat: {Title} on {Date}", title, date);
+        return created.Id;
     }
 
     public async Task<string> UpdatePersonalEventAsync(string eventId, string? title, DateTime? date, TimeSpan? startTime, TimeSpan? endTime, string? description)
