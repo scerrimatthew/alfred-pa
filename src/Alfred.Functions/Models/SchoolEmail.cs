@@ -13,6 +13,9 @@ public class SchoolEmail
     // False when the email was already read before Alfred saw it (user got there first) —
     // such emails are processed silently: state, labels, and digest, but no alert
     public bool WasUnread { get; set; } = true;
+    // Raw List-Unsubscribe header (mailto/https targets) and whether RFC 8058 one-click applies
+    public string? ListUnsubscribe { get; set; }
+    public bool ListUnsubscribeOneClick { get; set; }
 }
 
 public class LinkedDocument

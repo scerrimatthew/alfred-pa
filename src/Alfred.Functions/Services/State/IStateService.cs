@@ -20,6 +20,10 @@ public interface IStateService
     Task<List<SuppressionRuleEntity>> GetSuppressionRulesAsync();
     Task SaveSuppressionRuleAsync(string ruleId, string pattern, string? exampleSender, string? exampleSubject);
     Task DeleteSuppressionRuleAsync(string ruleId);
+    Task RecordSenderSeenAsync(string senderEmail, string senderName, bool wasQuiet, string? listUnsubscribe, bool oneClick);
+    Task<List<SenderStatsEntity>> GetUnsubscribeCandidatesAsync(int minEmails, int maxCandidates);
+    Task<SenderStatsEntity?> GetSenderStatAsync(string rowKey);
+    Task UpsertSenderStatAsync(SenderStatsEntity entity);
     Task<List<AttentionRuleEntity>> GetAttentionRulesAsync();
     Task SaveAttentionRuleAsync(string ruleId, string pattern, string? exampleSender, string? exampleSubject);
     Task DeleteAttentionRuleAsync(string ruleId);

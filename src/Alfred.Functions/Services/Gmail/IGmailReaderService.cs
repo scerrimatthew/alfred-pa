@@ -13,4 +13,5 @@ public interface IGmailReaderService
     Task RecategorizeAsync(string messageId, string newLabelPath);
     Task<string> CreateReplyDraftAsync(string messageId, string body, bool replyAll);
     Task<bool> HasRepliedAsync(string threadId, string messageId);
+    Task SendUnsubscribeEmailAsync(string toAddress, string? subject);
 }

@@ -126,6 +126,22 @@ public class PersonalEmailMonitorFunction
 
                     await _gmailReader.MarkAsReadAndLabelAsync(email.MessageId, LabelNames.ForPersonal(triage.Category));
 
+                    // Sender tally feeds the monthly unsubscribe proposals — best-effort
+                    if (!string.IsNullOrWhiteSpace(email.SenderEmail))
+                    {
+                        try
+                        {
+                            await _stateService.RecordSenderSeenAsync(
+                                email.SenderEmail, email.SenderName,
+                                wasQuiet: triage.Suppressed || !triage.RequiresAttention,
+                                email.ListUnsubscribe, email.ListUnsubscribeOneClick);
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger.LogWarning(ex, "Failed to record sender stats for {Sender}", email.SenderEmail);
+                        }
+                    }
+
                     _logger.LogInformation("Successfully processed personal email: {Subject}", email.Subject);
                 }
                 catch (Exception ex)

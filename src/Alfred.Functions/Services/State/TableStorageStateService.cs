@@ -12,6 +12,7 @@ public class TableStorageStateService : IStateService
     private const string SuppressionRulesTable = "SuppressionRules";
     private const string SnoozedEmailsTable = "SnoozedEmails";
     private const string AttentionRulesTable = "AttentionRules";
+    private const string SenderStatsTable = "SenderStats";
     private const string ChatHistoryTable = "ChatHistory";
     private const string SchoolPartition = "emails";
     private const string PersonalPartition = "personal";
@@ -306,6 +307,82 @@ public class TableStorageStateService : IStateService
         {
             // Already gone, ignore
         }
+    }
+
+    public async Task RecordSenderSeenAsync(string senderEmail, string senderName, bool wasQuiet, string? listUnsubscribe, bool oneClick)
+    {
+        var tableClient = _tableServiceClient.GetTableClient(SenderStatsTable);
+        await tableClient.CreateIfNotExistsAsync();
+
+        var rowKey = SenderStatsEntity.RowKeyFor(senderEmail);
+        SenderStatsEntity entity;
+        try
+        {
+            entity = (await tableClient.GetEntityAsync<SenderStatsEntity>(PersonalPartition, rowKey)).Value;
+        }
+        catch (RequestFailedException ex) when (ex.Status == 404)
+        {
+            entity = new SenderStatsEntity { RowKey = rowKey, SenderEmail = senderEmail };
+        }
+
+        entity.SenderName = senderName;
+        entity.TotalCount++;
+        if (wasQuiet) entity.QuietCount++;
+        entity.LastSeen = DateTimeOffset.UtcNow;
+        if (!string.IsNullOrWhiteSpace(listUnsubscribe))
+        {
+            entity.ListUnsubscribe = listUnsubscribe;
+            entity.ListUnsubscribeOneClick = oneClick;
+        }
+
+        await tableClient.UpsertEntityAsync(entity);
+    }
+
+    public async Task<List<SenderStatsEntity>> GetUnsubscribeCandidatesAsync(int minEmails, int maxCandidates)
+    {
+        var tableClient = _tableServiceClient.GetTableClient(SenderStatsTable);
+        await tableClient.CreateIfNotExistsAsync();
+
+        var results = new List<SenderStatsEntity>();
+        var query = tableClient.QueryAsync<SenderStatsEntity>(
+            e => e.PartitionKey == PersonalPartition && e.Unsubscribed == false);
+
+        await foreach (var entity in query)
+        {
+            // A candidate: enough volume, never once attention-worthy, offers an
+            // unsubscribe mechanism, and not already proposed to Matthew
+            if (entity.TotalCount >= minEmails
+                && entity.QuietCount == entity.TotalCount
+                && !string.IsNullOrWhiteSpace(entity.ListUnsubscribe)
+                && entity.ProposedAt is null)
+            {
+                results.Add(entity);
+            }
+        }
+
+        return results.OrderByDescending(e => e.TotalCount).Take(maxCandidates).ToList();
+    }
+
+    public async Task<SenderStatsEntity?> GetSenderStatAsync(string rowKey)
+    {
+        var tableClient = _tableServiceClient.GetTableClient(SenderStatsTable);
+        await tableClient.CreateIfNotExistsAsync();
+
+        try
+        {
+            return (await tableClient.GetEntityAsync<SenderStatsEntity>(PersonalPartition, rowKey)).Value;
+        }
+        catch (RequestFailedException ex) when (ex.Status == 404)
+        {
+            return null;
+        }
+    }
+
+    public async Task UpsertSenderStatAsync(SenderStatsEntity entity)
+    {
+        var tableClient = _tableServiceClient.GetTableClient(SenderStatsTable);
+        await tableClient.CreateIfNotExistsAsync();
+        await tableClient.UpsertEntityAsync(entity);
     }
 
     public async Task<List<AttentionRuleEntity>> GetAttentionRulesAsync()

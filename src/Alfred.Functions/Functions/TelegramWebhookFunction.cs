@@ -258,9 +258,95 @@ public class TelegramWebhookFunction
                 return "Snoozed — I'll bring it back tomorrow morning.";
             }
 
+            case "unsub":
+            {
+                var stats = await _stateService.GetSenderStatAsync(arg);
+                if (stats is null)
+                    return "I can't find that sender anymore.";
+                if (stats.Unsubscribed)
+                    return $"Already unsubscribed from {stats.SenderName}.";
+
+                var (mailto, mailtoSubject, httpUrl) = ParseListUnsubscribe(stats.ListUnsubscribe);
+
+                // RFC 8058 one-click: a single POST, no interaction needed
+                if (httpUrl is not null && stats.ListUnsubscribeOneClick)
+                {
+                    using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(15) };
+                    var response = await http.PostAsync(httpUrl, new StringContent(
+                        "List-Unsubscribe=One-Click", System.Text.Encoding.UTF8, "application/x-www-form-urlencoded"));
+                    if (response.IsSuccessStatusCode)
+                    {
+                        stats.Unsubscribed = true;
+                        await _stateService.UpsertSenderStatAsync(stats);
+                        return $"Done — unsubscribed from {stats.SenderName}.";
+                    }
+                    _logger.LogWarning("One-click unsubscribe returned {Status} for {Sender}",
+                        response.StatusCode, stats.SenderEmail);
+                }
+
+                if (mailto is not null)
+                {
+                    await _gmailReader.SendUnsubscribeEmailAsync(mailto, mailtoSubject);
+                    stats.Unsubscribed = true;
+                    await _stateService.UpsertSenderStatAsync(stats);
+                    return $"Done — sent the unsubscribe email for {stats.SenderName}.";
+                }
+
+                if (httpUrl is not null)
+                {
+                    // Plain link — needs a human tap; hand it over instead of guessing
+                    await _notificationService.SendPersonalAlertAsync(
+                        $"This one needs a tap from you: <a href=\"{httpUrl}\">unsubscribe from {stats.SenderName}</a>");
+                    stats.Unsubscribed = true;
+                    await _stateService.UpsertSenderStatAsync(stats);
+                    return "They want you to confirm it yourself — I've sent you the link.";
+                }
+
+                return "That sender doesn't offer a usable unsubscribe mechanism.";
+            }
+
+            case "keep":
+            {
+                var stats = await _stateService.GetSenderStatAsync(arg);
+                return stats is null
+                    ? "Noted."
+                    : $"Noted — I'll keep {stats.SenderName} coming and won't suggest this again.";
+            }
+
             default:
                 return "I don't recognize that button anymore.";
         }
+    }
+
+    // A List-Unsubscribe header holds one or two <targets>: mailto: and/or https:
+    private static (string? Mailto, string? MailtoSubject, string? HttpUrl) ParseListUnsubscribe(string? header)
+    {
+        if (string.IsNullOrWhiteSpace(header))
+            return (null, null, null);
+
+        string? mailto = null, mailtoSubject = null, httpUrl = null;
+        foreach (System.Text.RegularExpressions.Match match in
+                 System.Text.RegularExpressions.Regex.Matches(header, "<([^>]+)>"))
+        {
+            var target = match.Groups[1].Value.Trim();
+            if (target.StartsWith("mailto:", StringComparison.OrdinalIgnoreCase) && mailto is null)
+            {
+                var rest = target["mailto:".Length..];
+                var queryIndex = rest.IndexOf('?');
+                mailto = queryIndex >= 0 ? rest[..queryIndex] : rest;
+                if (queryIndex >= 0)
+                {
+                    var query = System.Web.HttpUtility.ParseQueryString(rest[(queryIndex + 1)..]);
+                    mailtoSubject = query["subject"];
+                }
+            }
+            else if (target.StartsWith("http", StringComparison.OrdinalIgnoreCase) && httpUrl is null)
+            {
+                httpUrl = target;
+            }
+        }
+
+        return (mailto, mailtoSubject, httpUrl);
     }
 
     // Tomorrow at 08:00 Malta time, as a UTC instant

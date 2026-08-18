@@ -307,6 +307,21 @@ public partial class GmailReaderService : IGmailReaderService
         }
     }
 
+    // Sends a bare unsubscribe email to a mailing list's mailto: unsubscribe address.
+    // The ONLY place Alfred sends email, and only ever to an address the list itself
+    // published in its List-Unsubscribe header.
+    public async Task SendUnsubscribeEmailAsync(string toAddress, string? subject)
+    {
+        var gmailService = CreateGmailService();
+
+        var mime = $"To: {toAddress}\r\nSubject: {EncodeHeaderValue(subject ?? "unsubscribe")}\r\n\r\nunsubscribe";
+        var raw = Convert.ToBase64String(Encoding.UTF8.GetBytes(mime))
+            .Replace('+', '-').Replace('/', '_').TrimEnd('=');
+
+        await gmailService.Users.Messages.Send(new Message { Raw = raw }, "me").ExecuteAsync();
+        _logger.LogInformation("Sent unsubscribe email to {Address}", toAddress);
+    }
+
     private string? _ownAddressCache;
 
     private async Task<string> GetOwnAddressAsync(GmailService gmailService)
@@ -422,7 +437,11 @@ public partial class GmailReaderService : IGmailReaderService
                 ReceivedDate = receivedDate,
                 Body = body,
                 Documents = documents,
-                WasUnread = message.LabelIds?.Contains("UNREAD") ?? true
+                WasUnread = message.LabelIds?.Contains("UNREAD") ?? true,
+                ListUnsubscribe = headers.FirstOrDefault(
+                    h => string.Equals(h.Name, "List-Unsubscribe", StringComparison.OrdinalIgnoreCase))?.Value,
+                ListUnsubscribeOneClick = headers.Any(
+                    h => string.Equals(h.Name, "List-Unsubscribe-Post", StringComparison.OrdinalIgnoreCase))
             };
         }
         catch (Exception ex)
