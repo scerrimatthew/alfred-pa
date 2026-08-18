@@ -1,0 +1,39 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <!-- Coverage gate: `dotnet test /p:CollectCoverage=true` fails the build below this threshold.
+       Policy (CLAUDE.md, "Testing & merge rules"): only the test-writer agent edits test files;
+       the threshold may be raised, never lowered, and these filters never loosened,
+       except on Matthew's explicit instruction. -->
+  <PropertyGroup Condition="'$(CollectCoverage)' == 'true'">
+    <Threshold>0</Threshold>
+    <ThresholdType>line</ThresholdType>
+    <ThresholdStat>total</ThresholdStat>
+    <Include>[Alfred.Functions]*</Include>
+    <ExcludeByFile>**/Program.cs</ExcludeByFile>
+    <ExcludeByAttribute>GeneratedCodeAttribute</ExcludeByAttribute>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="coverlet.msbuild" Version="6.0.4">
+      <PrivateAssets>all</PrivateAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+    </PackageReference>
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.11.1" />
+    <PackageReference Include="NSubstitute" Version="5.3.0" />
+    <PackageReference Include="xunit" Version="2.9.2" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2">
+      <PrivateAssets>all</PrivateAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+    </PackageReference>
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Alfred.Functions\Alfred.Functions.csproj" />
+  </ItemGroup>
+</Project>

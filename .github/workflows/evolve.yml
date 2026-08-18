@@ -34,13 +34,16 @@ jobs:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           INSTRUCTION: ${{ inputs.instruction }}
         run: |
-          claude -p "You are modifying Alfred, the personal-assistant Azure Functions app in this repo. Read CLAUDE.md first for the architecture and conventions. Matthew sent this instruction from Telegram: ${INSTRUCTION}. Make the change. Keep the build warning-free, follow existing code style, and update CLAUDE.md if behavior or settings change. Do NOT commit, push, or deploy - the pipeline handles those." --dangerously-skip-permissions
+          claude -p "You are modifying Alfred, the personal-assistant Azure Functions app in this repo. Read CLAUDE.md first for the architecture and conventions. Matthew sent this instruction from Telegram: ${INSTRUCTION}. Make the change. Keep the build warning-free, follow existing code style, and update CLAUDE.md if behavior or settings change. Follow the 'Testing & merge rules' in CLAUDE.md: as the coding agent you must NOT modify anything under tests/ or the coverage gate; if the change needs new or updated tests, dispatch a subagent in the test-writer role (see .claude/agents/test-writer.md) which touches ONLY tests/. All tests must pass before you finish. Do NOT commit, push, or deploy - the pipeline handles those." --dangerously-skip-permissions
 
       - name: Build
         run: |
           dotnet build src/Alfred.Functions/Alfred.Functions.csproj -warnaserror
           dotnet build tools/TestHarness/TestHarness.csproj -warnaserror
           dotnet publish src/Alfred.Functions/Alfred.Functions.csproj -c Release -o ./publish_output
+
+      - name: Test (coverage gate)
+        run: dotnet test tests/Alfred.Functions.Tests/Alfred.Functions.Tests.csproj -warnaserror /p:CollectCoverage=true
 
       - name: Commit and push
         env:

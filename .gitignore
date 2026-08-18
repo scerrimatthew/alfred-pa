@@ -38,3 +38,10 @@ Thumbs.db
 Azure.PublishSettings
 publish/
 deploy.zip
+
+## Test artifacts
+TestResults/
+coverage.json
+coverage.*.json
+coverage.*.xml
+*.cobertura.xml
