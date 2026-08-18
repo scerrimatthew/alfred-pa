@@ -71,6 +71,13 @@ tools/
 
 Because the monitors only see unread email, an email read manually before the next poll is never processed. Marking read / labeling is best-effort: if it fails, the state table still prevents reprocessing. Gmail labels are created automatically on first use. Requires the `gmail.modify` OAuth scope — refresh tokens issued for the old read-only scope must be regenerated with `tools/GetGoogleRefreshToken`
 
+## Self-modification (/evolve)
+
+Sending `/evolve <instruction>` to the bot from the personal DM dispatches the `evolve` GitHub Actions workflow (`.github/workflows/evolve.yml`), which runs a headless Claude Code session against this repo, builds, commits, pushes, deploys to Azure, and reports back via Telegram. Requirements:
+
+- Function app settings: `GitHub__Token` (fine-grained PAT with Actions read/write on this repo), `GitHub__Repo` (default: `scerrimatthew/alfred-pa`)
+- GitHub repo secrets: `ANTHROPIC_API_KEY`, `AZURE_FUNCTIONAPP_PUBLISH_PROFILE`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`
+
 ## Deployment
 
 Deploy to Azure using the Azure Functions Core Tools CLI:

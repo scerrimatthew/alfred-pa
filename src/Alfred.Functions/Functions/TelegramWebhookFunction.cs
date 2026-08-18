@@ -85,14 +85,20 @@ public class TelegramWebhookFunction
 
             _logger.LogInformation("Received question from user {UserId} in chat {ChatId}: {Question}", userId, chatId, question);
 
+            // The personal DM gets personal context and email tools on top of the school context;
+            // the shared school chat stays school-only
+            var isPersonalChat = chatId.ToString() == _options.PersonalTelegramChatId.Trim();
+
+            if (isPersonalChat && question.TrimStart().StartsWith("/evolve", StringComparison.OrdinalIgnoreCase))
+            {
+                await HandleEvolveCommandAsync(chatId, question.TrimStart()["/evolve".Length..].Trim());
+                return req.CreateResponse(System.Net.HttpStatusCode.OK);
+            }
+
             // Gather context in parallel
             var lookbackSince = DateTimeOffset.UtcNow.AddDays(-_options.ChatLookbackDays);
             var emailsTask = _stateService.GetEmailsSinceAsync(lookbackSince);
             var eventsTask = _calendarService.GetUpcomingEventsAsync(_options.ChatLookbackDays);
-
-            // The personal DM gets personal context and email tools on top of the school context;
-            // the shared school chat stays school-only
-            var isPersonalChat = chatId.ToString() == _options.PersonalTelegramChatId.Trim();
 
             string answer;
             if (isPersonalChat)
@@ -132,6 +138,51 @@ public class TelegramWebhookFunction
 
         // Always return 200 to Telegram to prevent retries
         return req.CreateResponse(System.Net.HttpStatusCode.OK);
+    }
+
+    // "/evolve <instruction>" hands the instruction to a GitHub Actions workflow that runs a
+    // headless Claude Code session against this repo, builds, commits, and redeploys
+    private async Task HandleEvolveCommandAsync(long chatId, string instruction)
+    {
+        if (string.IsNullOrWhiteSpace(instruction))
+        {
+            await _notificationService.SendMessageAsync(chatId,
+                "Tell me what to change, e.g. /evolve make the personal digest shorter");
+            return;
+        }
+
+        var token = Environment.GetEnvironmentVariable("GitHub__Token");
+        var repo = Environment.GetEnvironmentVariable("GitHub__Repo") ?? "scerrimatthew/alfred-pa";
+        if (string.IsNullOrWhiteSpace(token))
+        {
+            await _notificationService.SendMessageAsync(chatId,
+                "The GitHub token (GitHub__Token) isn't configured, so I can't start a coding session.");
+            return;
+        }
+
+        using var http = new HttpClient();
+        http.DefaultRequestHeaders.UserAgent.ParseAdd("Alfred");
+        http.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token);
+        http.DefaultRequestHeaders.Accept.ParseAdd("application/vnd.github+json");
+
+        var payload = JsonSerializer.Serialize(new { @ref = "main", inputs = new { instruction } });
+        var response = await http.PostAsync(
+            $"https://api.github.com/repos/{repo}/actions/workflows/evolve.yml/dispatches",
+            new StringContent(payload, System.Text.Encoding.UTF8, "application/json"));
+
+        if (response.IsSuccessStatusCode)
+        {
+            _logger.LogInformation("Evolve dispatched: {Instruction}", instruction);
+            await _notificationService.SendMessageAsync(chatId,
+                "On it — I've started a coding session for that change. I'll message you once it's built and deployed (usually 5-10 minutes).");
+        }
+        else
+        {
+            var body = await response.Content.ReadAsStringAsync();
+            _logger.LogError("Evolve dispatch failed: {Status} {Body}", response.StatusCode, body);
+            await _notificationService.SendMessageAsync(chatId,
+                $"Couldn't start the coding session — GitHub returned {(int)response.StatusCode}.");
+        }
     }
 
     private async Task<string> ExecuteEmailToolAsync(string toolName, JsonNode? input)
