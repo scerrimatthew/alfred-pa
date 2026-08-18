@@ -371,6 +371,12 @@ public class ClaudeSummarizerService : ISummarizerService
             - list_suppression_rules / remove_suppression_rule: review or undo suppression rules
               ("what am I ignoring?", "start showing me Bolt reports again" — list first to find
               the rule id if you don't have it).
+            - snooze_email: when Matthew wants to deal with an email later ("remind me about
+              this tomorrow", "snooze the GO bill till Friday"), schedule a reminder. Compute
+              remind_at ("yyyy-MM-dd HH:mm", Malta time) from his words — a bare day means
+              08:00 that morning. Alfred re-sends the alert at that time.
+            - list_snoozes / cancel_snooze: review or cancel pending reminders ("what have I
+              snoozed?", "forget that reminder" — list first to find the id if needed).
             - draft_reply: write a reply to an email and save it in his Gmail Drafts for him to
               review and send — NOTHING is ever sent automatically. Use when Matthew asks to
               reply to an email ("reply saying I'll pay Friday", "tell Antonio Thursday works").
@@ -490,6 +496,37 @@ public class ClaudeSummarizerService : ISummarizerService
                         "description": { "type": "string" }
                     },
                     "required": ["event_id"]
+                }
+                """)),
+            new Anthropic.SDK.Common.Function(
+                "snooze_email",
+                "Schedule a reminder about an email — Alfred re-sends the alert at the given time.",
+                System.Text.Json.Nodes.JsonNode.Parse("""
+                {
+                    "type": "object",
+                    "properties": {
+                        "message_id": { "type": "string", "description": "The Gmail message id of the email (from id=...)" },
+                        "remind_at": { "type": "string", "description": "When to remind, \"yyyy-MM-dd HH:mm\" in Malta time. A bare date (00:00) means 08:00 that morning." }
+                    },
+                    "required": ["message_id", "remind_at"]
+                }
+                """)),
+            new Anthropic.SDK.Common.Function(
+                "list_snoozes",
+                "List pending email reminders with their ids and due times.",
+                System.Text.Json.Nodes.JsonNode.Parse("""
+                { "type": "object", "properties": {} }
+                """)),
+            new Anthropic.SDK.Common.Function(
+                "cancel_snooze",
+                "Cancel a pending email reminder.",
+                System.Text.Json.Nodes.JsonNode.Parse("""
+                {
+                    "type": "object",
+                    "properties": {
+                        "message_id": { "type": "string", "description": "The Gmail message id of the snoozed email (from list_snoozes or id=...)" }
+                    },
+                    "required": ["message_id"]
                 }
                 """)),
             new Anthropic.SDK.Common.Function(

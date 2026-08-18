@@ -10,6 +10,7 @@ public class TableStorageStateService : IStateService
     private const string ProcessedEmailsTable = "ProcessedEmails";
     private const string CalendarEventsTable = "CalendarEvents";
     private const string SuppressionRulesTable = "SuppressionRules";
+    private const string SnoozedEmailsTable = "SnoozedEmails";
     private const string ChatHistoryTable = "ChatHistory";
     private const string SchoolPartition = "emails";
     private const string PersonalPartition = "personal";
@@ -131,6 +132,75 @@ public class TableStorageStateService : IStateService
         catch (RequestFailedException ex) when (ex.Status == 404)
         {
             _logger.LogWarning("Cannot update category — personal email {MessageId} not found in state", messageId);
+        }
+    }
+
+    public async Task SaveSnoozeAsync(string messageId, string subject, string senderName, string summary, string? threadId, DateTimeOffset dueAt)
+    {
+        var tableClient = _tableServiceClient.GetTableClient(SnoozedEmailsTable);
+        await tableClient.CreateIfNotExistsAsync();
+
+        var entity = new SnoozedEmailEntity
+        {
+            PartitionKey = PersonalPartition,
+            RowKey = messageId,
+            Subject = subject,
+            SenderName = senderName,
+            Summary = summary,
+            ThreadId = threadId,
+            DueAt = dueAt,
+            CreatedAt = DateTimeOffset.UtcNow
+        };
+
+        await tableClient.UpsertEntityAsync(entity);
+        _logger.LogInformation("Snoozed email {MessageId} until {DueAt}: {Subject}", messageId, dueAt, subject);
+    }
+
+    public async Task<List<SnoozedEmailEntity>> GetDueSnoozesAsync(DateTimeOffset now)
+    {
+        var tableClient = _tableServiceClient.GetTableClient(SnoozedEmailsTable);
+        await tableClient.CreateIfNotExistsAsync();
+
+        var results = new List<SnoozedEmailEntity>();
+        var query = tableClient.QueryAsync<SnoozedEmailEntity>(
+            e => e.PartitionKey == PersonalPartition && e.DueAt <= now);
+
+        await foreach (var entity in query)
+        {
+            results.Add(entity);
+        }
+
+        return results;
+    }
+
+    public async Task<List<SnoozedEmailEntity>> GetSnoozesAsync()
+    {
+        var tableClient = _tableServiceClient.GetTableClient(SnoozedEmailsTable);
+        await tableClient.CreateIfNotExistsAsync();
+
+        var results = new List<SnoozedEmailEntity>();
+        var query = tableClient.QueryAsync<SnoozedEmailEntity>(e => e.PartitionKey == PersonalPartition);
+
+        await foreach (var entity in query)
+        {
+            results.Add(entity);
+        }
+
+        return results.OrderBy(s => s.DueAt).ToList();
+    }
+
+    public async Task DeleteSnoozeAsync(string messageId)
+    {
+        var tableClient = _tableServiceClient.GetTableClient(SnoozedEmailsTable);
+        await tableClient.CreateIfNotExistsAsync();
+
+        try
+        {
+            await tableClient.DeleteEntityAsync(PersonalPartition, messageId);
+        }
+        catch (RequestFailedException ex) when (ex.Status == 404)
+        {
+            // Already gone, ignore
         }
     }
 

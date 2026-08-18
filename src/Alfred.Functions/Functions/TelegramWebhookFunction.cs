@@ -236,9 +236,40 @@ public class TelegramWebhookFunction
                 return $"Muted — no more alerts about emails from {email.SenderName}.";
             }
 
+            case "sn1":
+            {
+                var email = await _stateService.GetPersonalEmailAsync(arg);
+                string subject, senderName, summary;
+                string? threadId;
+                if (email is not null)
+                {
+                    (subject, senderName, summary, threadId) = (email.Subject, email.SenderName, email.Summary, email.GmailThreadId);
+                }
+                else
+                {
+                    // Snoozes can be re-armed on emails Alfred never triaged (found via search)
+                    var raw = await _gmailReader.GetEmailAsync(arg);
+                    if (raw is null)
+                        return "I can't find that email anymore.";
+                    (subject, senderName, summary, threadId) = (raw.Subject, raw.SenderName, "", raw.ThreadId);
+                }
+
+                await _stateService.SaveSnoozeAsync(arg, subject, senderName, summary, threadId, NextMorningMalta());
+                return "Snoozed — I'll bring it back tomorrow morning.";
+            }
+
             default:
                 return "I don't recognize that button anymore.";
         }
+    }
+
+    // Tomorrow at 08:00 Malta time, as a UTC instant
+    private static DateTimeOffset NextMorningMalta()
+    {
+        var maltaTz = TimeZoneInfo.FindSystemTimeZoneById("Europe/Malta");
+        var nowMalta = TimeZoneInfo.ConvertTime(DateTimeOffset.UtcNow, maltaTz);
+        var tomorrowMorning = nowMalta.Date.AddDays(1).AddHours(8);
+        return new DateTimeOffset(tomorrowMorning, maltaTz.GetUtcOffset(tomorrowMorning));
     }
 
     // "/evolve <instruction>" hands the instruction to a GitHub Actions workflow that runs a
@@ -389,6 +420,64 @@ public class TelegramWebhookFunction
 
                     {body}{attachments}
                     """;
+            }
+
+            case "snooze_email":
+            {
+                var messageId = input?["message_id"]?.GetValue<string>();
+                var remindAt = input?["remind_at"]?.GetValue<string>();
+                if (string.IsNullOrWhiteSpace(messageId) || string.IsNullOrWhiteSpace(remindAt))
+                    return "Error: message_id and remind_at are required.";
+
+                if (!DateTime.TryParse(remindAt, out var localTime))
+                    return "Error: remind_at must be \"yyyy-MM-dd HH:mm\" (Malta time).";
+                if (localTime.TimeOfDay == TimeSpan.Zero)
+                    localTime = localTime.AddHours(8); // bare date -> that morning
+
+                var maltaTz = TimeZoneInfo.FindSystemTimeZoneById("Europe/Malta");
+                var dueAt = new DateTimeOffset(localTime, maltaTz.GetUtcOffset(localTime));
+                if (dueAt <= DateTimeOffset.UtcNow)
+                    return "Error: that reminder time is already in the past.";
+
+                var email = await _stateService.GetPersonalEmailAsync(messageId);
+                string subject, senderName, summary;
+                string? threadId;
+                if (email is not null)
+                {
+                    (subject, senderName, summary, threadId) = (email.Subject, email.SenderName, email.Summary, email.GmailThreadId);
+                }
+                else
+                {
+                    // Not in Alfred's records (older email found via search) — read it from Gmail
+                    var raw = await _gmailReader.GetEmailAsync(messageId);
+                    if (raw is null)
+                        return "Error: email not found.";
+                    (subject, senderName, summary, threadId) = (raw.Subject, raw.SenderName, "", raw.ThreadId);
+                }
+
+                await _stateService.SaveSnoozeAsync(messageId, subject, senderName, summary, threadId, dueAt);
+                return $"Snoozed \"{subject}\" — reminder set for {localTime:ddd d MMM HH:mm} (Malta time).";
+            }
+
+            case "list_snoozes":
+            {
+                var snoozes = await _stateService.GetSnoozesAsync();
+                if (snoozes.Count == 0)
+                    return "No reminders are pending.";
+
+                var maltaTz = TimeZoneInfo.FindSystemTimeZoneById("Europe/Malta");
+                return string.Join("\n", snoozes.Select(s =>
+                    $"- id={s.RowKey} due {TimeZoneInfo.ConvertTime(s.DueAt, maltaTz):ddd d MMM HH:mm}: {s.SenderName} — {s.Subject}"));
+            }
+
+            case "cancel_snooze":
+            {
+                var messageId = input?["message_id"]?.GetValue<string>();
+                if (string.IsNullOrWhiteSpace(messageId))
+                    return "Error: no message_id provided.";
+
+                await _stateService.DeleteSnoozeAsync(messageId);
+                return "Reminder cancelled.";
             }
 
             case "draft_reply":

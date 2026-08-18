@@ -90,7 +90,8 @@ public class PersonalEmailMonitorFunction
                             var buttons = new List<NotificationButton>
                             {
                                 new("Mark unread", $"mu:{email.MessageId}"),
-                                new("Mute sender", $"sup:{email.MessageId}")
+                                new("Mute sender", $"sup:{email.MessageId}"),
+                                new("Remind me tomorrow", $"sn1:{email.MessageId}")
                             };
 
                             await _notificationService.SendPersonalAlertAsync(message, buttons);
