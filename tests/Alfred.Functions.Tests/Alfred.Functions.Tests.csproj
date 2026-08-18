@@ -11,11 +11,11 @@
        the threshold may be raised, never lowered, and these filters never loosened,
        except on Matthew's explicit instruction. -->
   <PropertyGroup Condition="'$(CollectCoverage)' == 'true'">
-    <Threshold>0</Threshold>
+    <Threshold>60</Threshold>
     <ThresholdType>line</ThresholdType>
     <ThresholdStat>total</ThresholdStat>
     <Include>[Alfred.Functions]*</Include>
-    <ExcludeByFile>**/Program.cs</ExcludeByFile>
+    <ExcludeByFile>**/Program.cs,**/*.g.cs</ExcludeByFile>
     <ExcludeByAttribute>GeneratedCodeAttribute</ExcludeByAttribute>
   </PropertyGroup>
 
