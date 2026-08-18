@@ -50,12 +50,14 @@ jobs:
           git config user.email "alfred-evolve@users.noreply.github.com"
           git add -A ':!publish_output'
           if git diff --cached --quiet; then
-            echo "No changes produced" && exit 1
-          fi
-          git commit -m "evolve: ${INSTRUCTION}" -m "Automated self-modification via /evolve from Telegram.
+            # No diff (e.g. verify-only instruction or a rerun) — still deploy current main
+            echo "No changes produced; skipping commit"
+          else
+            git commit -m "evolve: ${INSTRUCTION}" -m "Automated self-modification via /evolve from Telegram.
 
           Co-Authored-By: Claude Code <noreply@anthropic.com>"
-          git push
+            git push
+          fi
 
       - name: Deploy to Azure Functions
         uses: Azure/functions-action@v1

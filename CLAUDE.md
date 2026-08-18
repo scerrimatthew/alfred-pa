@@ -91,6 +91,8 @@ Requires `azure-functions-core-tools@4` installed via npm. The `func` CLI handle
 
 Do NOT use manual zip deploy — `Compress-Archive` on Windows skips dotfiles like `.azurefunctions`.
 
+IMPORTANT: the preferred deploy path is now the `evolve` GitHub Actions workflow (or any Actions deploy using `Azure/functions-action`). A local `func` CLI deploy sets `WEBSITE_RUN_FROM_PACKAGE` to a blob URL, which breaks subsequent Actions deploys until that app setting is removed. If you deploy locally, remove `WEBSITE_RUN_FROM_PACKAGE` afterwards to keep /evolve working.
+
 ## Telegram Webhook Setup
 
 After deploying, register the webhook with Telegram:
