@@ -20,8 +20,11 @@ public partial class GmailRedirectFunction
             return req.CreateResponse(HttpStatusCode.BadRequest);
         }
 
+        // accountId by email is unambiguous — an index (accountId=1) targets whichever account
+        // happens to be first in the Gmail app and silently lands on the inbox when wrong
+        var account = Environment.GetEnvironmentVariable("Alfred__GmailAccount") ?? "scerri.matthew@gmail.com";
         var webUrl = $"https://mail.google.com/mail/u/0/#all/{threadId}";
-        var appUrl = $"googlegmail:///cv={threadId}/accountId=1";
+        var appUrl = $"googlegmail:///cv={threadId}/accountId={account}";
 
         var response = req.CreateResponse(HttpStatusCode.OK);
         response.Headers.Add("Content-Type", "text/html; charset=utf-8");
