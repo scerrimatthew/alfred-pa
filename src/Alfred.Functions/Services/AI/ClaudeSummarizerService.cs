@@ -51,7 +51,7 @@ public class ClaudeSummarizerService : ISummarizerService
         return ParseDigestResponse(responseText);
     }
 
-    public async Task<PersonalEmailTriage> TriagePersonalEmailAsync(SchoolEmail email, List<SuppressionRuleEntity> suppressionRules, List<AttentionRuleEntity> attentionRules)
+    public async Task<PersonalEmailTriage> TriagePersonalEmailAsync(SchoolEmail email, List<SuppressionRuleEntity> suppressionRules, List<AttentionRuleEntity> attentionRules, List<ProcessedEmailEntity> threadContext)
     {
         var client = CreateClient();
 
@@ -63,7 +63,7 @@ public class ClaudeSummarizerService : ISummarizerService
                 docsWithContent.Select(d => $"[{d.Title}]\n{d.ExtractedText}"))
             : "";
 
-        var prompt = BuildTriagePrompt(email, today, documentContent, suppressionRules, attentionRules);
+        var prompt = BuildTriagePrompt(email, today, documentContent, suppressionRules, attentionRules, threadContext);
 
         var parameters = new MessageParameters
         {
@@ -824,12 +824,32 @@ public class ClaudeSummarizerService : ISummarizerService
             """;
     }
 
-    private static string BuildTriagePrompt(SchoolEmail email, string today, string documentContent, List<SuppressionRuleEntity> suppressionRules, List<AttentionRuleEntity> attentionRules)
+    private static string BuildTriagePrompt(SchoolEmail email, string today, string documentContent, List<SuppressionRuleEntity> suppressionRules, List<AttentionRuleEntity> attentionRules, List<ProcessedEmailEntity> threadContext)
     {
         // Cap the body — personal inbox emails (marketing, long threads) can be huge after HTML stripping
         var body = email.Body.Length > 8000
             ? email.Body[..8000] + "\n[... truncated]"
             : email.Body;
+
+        var threadSection = threadContext.Count > 0
+            ? "\n\nTHREAD CONTEXT — this email is a new message in a conversation Alfred already processed. Earlier messages in this thread:\n"
+              + string.Join("\n", threadContext.Select(t =>
+                  $"- [{t.ProcessedAt:ddd d MMM}] {t.SenderName} — {t.Subject}: {t.Summary}"))
+              + """
+
+
+              Treat this email as a FOLLOW-UP, not a fresh item:
+              - Focus the summary and telegramMessage on what is NEW in this message (an answer,
+                a changed date, a new ask), wording it as a follow-up ("Sarah got back about...").
+              - Judge attention by the new content alone: a thread Matthew was already alerted
+                about does not need re-alerting for pleasantries, confirmations of what he
+                already knows, or automated "thanks, we received it" replies.
+              - A genuinely new development (someone answered his question, a deadline moved,
+                money is now due) DOES warrant attention as usual.
+              - Do not re-create calendar events the earlier messages already produced; only
+                include calendarEvents for genuinely new or changed dates.
+              """
+            : "";
 
         var attentionSection = attentionRules.Count > 0
             ? "\n\nATTENTION RULES — Matthew has explicitly asked to ALWAYS be notified about emails matching these patterns:\n"
@@ -886,7 +906,7 @@ public class ClaudeSummarizerService : ISummarizerService
             - If the resolved date has already passed, say so plainly ("this was for this morning
               at 08:00") and do NOT create calendar events for it.
 
-            Triage the email below. Decide whether it warrants Matthew's attention.{rulesSection}{attentionSection}
+            Triage the email below. Decide whether it warrants Matthew's attention.{rulesSection}{attentionSection}{threadSection}
 
             The bar for attention: would a sharp human PA actually interrupt Matthew's day for this?
             Most emails don't clear that bar. Interrupt him for:

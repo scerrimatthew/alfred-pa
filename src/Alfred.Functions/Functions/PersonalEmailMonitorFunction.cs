@@ -69,7 +69,13 @@ public class PersonalEmailMonitorFunction
                 {
                     _logger.LogInformation("Triaging personal email: {Subject}", email.Subject);
 
-                    var triage = await _summarizer.TriagePersonalEmailAsync(email, suppressionRules, attentionRules);
+                    // A reply's thread id points at the first message; the first message's
+                    // thread id equals its own id, so it can't have earlier entries
+                    var threadContext = email.ThreadId != email.MessageId
+                        ? await _stateService.GetPersonalEmailsByThreadAsync(email.ThreadId)
+                        : [];
+
+                    var triage = await _summarizer.TriagePersonalEmailAsync(email, suppressionRules, attentionRules, threadContext);
 
                     if (triage.Suppressed)
                     {

@@ -9,6 +9,7 @@ public interface IStateService
     Task<bool> IsPersonalEmailProcessedAsync(string messageId);
     Task MarkPersonalEmailProcessedAsync(string messageId, string subject, string senderName, string summary, string? category = null, bool suppressed = false, string? threadId = null, string? senderEmail = null);
     Task<ProcessedEmailEntity?> GetPersonalEmailAsync(string messageId);
+    Task<List<ProcessedEmailEntity>> GetPersonalEmailsByThreadAsync(string threadId);
     Task UpdatePersonalEmailCategoryAsync(string messageId, string category);
     Task SaveSnoozeAsync(string messageId, string subject, string senderName, string summary, string? threadId, DateTimeOffset dueAt);
     Task<List<SnoozedEmailEntity>> GetDueSnoozesAsync(DateTimeOffset now);

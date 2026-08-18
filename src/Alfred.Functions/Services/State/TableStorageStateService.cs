@@ -136,6 +136,23 @@ public class TableStorageStateService : IStateService
         }
     }
 
+    public async Task<List<ProcessedEmailEntity>> GetPersonalEmailsByThreadAsync(string threadId)
+    {
+        var tableClient = _tableServiceClient.GetTableClient(ProcessedEmailsTable);
+        await tableClient.CreateIfNotExistsAsync();
+
+        var results = new List<ProcessedEmailEntity>();
+        var query = tableClient.QueryAsync<ProcessedEmailEntity>(
+            e => e.PartitionKey == PersonalPartition && e.GmailThreadId == threadId);
+
+        await foreach (var entity in query)
+        {
+            results.Add(entity);
+        }
+
+        return results.OrderBy(e => e.ProcessedAt).ToList();
+    }
+
     public async Task SaveSnoozeAsync(string messageId, string subject, string senderName, string summary, string? threadId, DateTimeOffset dueAt)
     {
         var tableClient = _tableServiceClient.GetTableClient(SnoozedEmailsTable);
