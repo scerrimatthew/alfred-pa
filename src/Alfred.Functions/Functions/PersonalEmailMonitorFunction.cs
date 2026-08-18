@@ -87,7 +87,13 @@ public class PersonalEmailMonitorFunction
 
                             message += $"\n\n<a href=\"{GmailLinks.ForThread(email.ThreadId)}\">Open in Gmail</a>";
 
-                            await _notificationService.SendPersonalAlertAsync(message);
+                            var buttons = new List<NotificationButton>
+                            {
+                                new("Mark unread", $"mu:{email.MessageId}"),
+                                new("Mute sender", $"sup:{email.MessageId}")
+                            };
+
+                            await _notificationService.SendPersonalAlertAsync(message, buttons);
                         }
                         else
                         {
@@ -97,7 +103,7 @@ public class PersonalEmailMonitorFunction
                     }
 
                     await _stateService.MarkPersonalEmailProcessedAsync(
-                        email.MessageId, email.Subject, email.SenderName, triage.Summary, triage.Category, triage.Suppressed, email.ThreadId);
+                        email.MessageId, email.Subject, email.SenderName, triage.Summary, triage.Category, triage.Suppressed, email.ThreadId, email.SenderEmail);
 
                     await _gmailReader.MarkAsReadAndLabelAsync(email.MessageId, LabelNames.ForPersonal(triage.Category));
 

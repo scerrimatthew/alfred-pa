@@ -61,6 +61,13 @@ public class TelegramWebhookFunction
             using var doc = JsonDocument.Parse(body);
             var root = doc.RootElement;
 
+            // Inline-button presses arrive as callback_query updates, not messages
+            if (root.TryGetProperty("callback_query", out var callbackQuery))
+            {
+                await HandleCallbackQueryAsync(callbackQuery);
+                return req.CreateResponse(System.Net.HttpStatusCode.OK);
+            }
+
             if (!root.TryGetProperty("message", out var message))
                 return req.CreateResponse(System.Net.HttpStatusCode.OK);
 
@@ -160,6 +167,78 @@ public class TelegramWebhookFunction
 
         // Always return 200 to Telegram to prevent retries
         return req.CreateResponse(System.Net.HttpStatusCode.OK);
+    }
+
+    // One-tap actions from the inline buttons under personal alerts
+    private async Task HandleCallbackQueryAsync(JsonElement callbackQuery)
+    {
+        var callbackId = callbackQuery.GetProperty("id").GetString()!;
+        var userId = callbackQuery.TryGetProperty("from", out var from)
+            ? from.GetProperty("id").GetInt64()
+            : 0;
+        var data = callbackQuery.TryGetProperty("data", out var dataElement)
+            ? dataElement.GetString()
+            : null;
+
+        if (!IsUserAllowed(userId))
+        {
+            _logger.LogWarning("Unauthorized callback from user {UserId}", userId);
+            await _notificationService.AnswerCallbackAsync(callbackId, "Not authorized.");
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(data))
+        {
+            await _notificationService.AnswerCallbackAsync(callbackId);
+            return;
+        }
+
+        _logger.LogInformation("Callback action from user {UserId}: {Data}", userId, data);
+
+        try
+        {
+            var result = await ExecuteCallbackActionAsync(data);
+            await _notificationService.AnswerCallbackAsync(callbackId, result);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Callback action failed: {Data}", data);
+            await _notificationService.AnswerCallbackAsync(callbackId, "Sorry, that didn't work — try asking me in chat.");
+        }
+    }
+
+    private async Task<string> ExecuteCallbackActionAsync(string data)
+    {
+        var separator = data.IndexOf(':');
+        var (action, arg) = separator > 0
+            ? (data[..separator], data[(separator + 1)..])
+            : (data, "");
+
+        switch (action)
+        {
+            case "mu":
+                await _gmailReader.MarkAsUnreadAsync(arg);
+                return "Marked unread — it's back in your inbox.";
+
+            case "sup":
+            {
+                var email = await _stateService.GetPersonalEmailAsync(arg);
+                if (email is null)
+                    return "I can't find that email in my records anymore.";
+
+                var sender = !string.IsNullOrWhiteSpace(email.SenderEmail) ? email.SenderEmail : email.SenderName;
+                var ruleId = Guid.NewGuid().ToString("N")[..8];
+                await _stateService.SaveSuppressionRuleAsync(
+                    ruleId,
+                    $"All emails from {sender}",
+                    email.SenderEmail ?? email.SenderName,
+                    email.Subject);
+                return $"Muted — no more alerts about emails from {email.SenderName}.";
+            }
+
+            default:
+                return "I don't recognize that button anymore.";
+        }
     }
 
     // "/evolve <instruction>" hands the instruction to a GitHub Actions workflow that runs a

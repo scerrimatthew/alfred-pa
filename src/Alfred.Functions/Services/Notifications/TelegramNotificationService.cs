@@ -38,17 +38,38 @@ public class TelegramNotificationService : INotificationService
         _logger.LogInformation("Sent Telegram error notification");
     }
 
-    public async Task SendPersonalAlertAsync(string message)
+    public async Task SendPersonalAlertAsync(string message, IReadOnlyList<NotificationButton>? buttons = null)
     {
         var (client, chatId) = GetClientAndChatId("Alfred__PersonalTelegramChatId");
 
-        var chunks = SplitMessage(message);
-        foreach (var chunk in chunks)
+        Telegram.Bot.Types.ReplyMarkups.InlineKeyboardMarkup? markup = null;
+        if (buttons is { Count: > 0 })
         {
-            await client.SendMessage(chatId, chunk, parseMode: ParseMode.Html, linkPreviewOptions: new Telegram.Bot.Types.LinkPreviewOptions { IsDisabled = true });
+            markup = new Telegram.Bot.Types.ReplyMarkups.InlineKeyboardMarkup(
+                buttons
+                    .Select(b => Telegram.Bot.Types.ReplyMarkups.InlineKeyboardButton.WithCallbackData(b.Text, b.CallbackData))
+                    .Chunk(2));
+        }
+
+        var chunks = SplitMessage(message);
+        for (var i = 0; i < chunks.Count; i++)
+        {
+            // Buttons go on the last chunk so they sit directly under the message
+            await client.SendMessage(chatId, chunks[i], parseMode: ParseMode.Html,
+                linkPreviewOptions: new Telegram.Bot.Types.LinkPreviewOptions { IsDisabled = true },
+                replyMarkup: i == chunks.Count - 1 ? markup : null);
         }
 
         _logger.LogInformation("Sent personal Telegram alert ({Chunks} chunk(s))", chunks.Count);
+    }
+
+    public async Task AnswerCallbackAsync(string callbackQueryId, string? text = null)
+    {
+        var client = new TelegramBotClient(
+            Environment.GetEnvironmentVariable("Telegram__BotToken")
+                ?? throw new InvalidOperationException("Telegram bot token not configured"));
+
+        await client.AnswerCallbackQuery(callbackQueryId, text);
     }
 
     public async Task SendPersonalErrorAsync(string errorMessage)

@@ -49,10 +49,10 @@ public class TableStorageStateService : IStateService
     public Task MarkEmailProcessedAsync(string messageId, string subject, string senderName, string summary, string? homework = null, string? category = null, string? threadId = null) =>
         MarkProcessedAsync(SchoolPartition, messageId, subject, senderName, summary, homework, category, suppressed: false, threadId);
 
-    public Task MarkPersonalEmailProcessedAsync(string messageId, string subject, string senderName, string summary, string? category = null, bool suppressed = false, string? threadId = null) =>
-        MarkProcessedAsync(PersonalPartition, messageId, subject, senderName, summary, homework: null, category, suppressed, threadId);
+    public Task MarkPersonalEmailProcessedAsync(string messageId, string subject, string senderName, string summary, string? category = null, bool suppressed = false, string? threadId = null, string? senderEmail = null) =>
+        MarkProcessedAsync(PersonalPartition, messageId, subject, senderName, summary, homework: null, category, suppressed, threadId, senderEmail);
 
-    private async Task MarkProcessedAsync(string partition, string messageId, string subject, string senderName, string summary, string? homework, string? category, bool suppressed = false, string? threadId = null)
+    private async Task MarkProcessedAsync(string partition, string messageId, string subject, string senderName, string summary, string? homework, string? category, bool suppressed = false, string? threadId = null, string? senderEmail = null)
     {
         var tableClient = _tableServiceClient.GetTableClient(ProcessedEmailsTable);
         await tableClient.CreateIfNotExistsAsync();
@@ -63,6 +63,7 @@ public class TableStorageStateService : IStateService
             RowKey = messageId,
             Subject = subject,
             SenderName = senderName,
+            SenderEmail = senderEmail,
             Summary = summary,
             Homework = homework,
             Category = category,
@@ -73,6 +74,22 @@ public class TableStorageStateService : IStateService
 
         await tableClient.UpsertEntityAsync(entity);
         _logger.LogInformation("Marked email {MessageId} as processed: {Subject}", messageId, subject);
+    }
+
+    public async Task<ProcessedEmailEntity?> GetPersonalEmailAsync(string messageId)
+    {
+        var tableClient = _tableServiceClient.GetTableClient(ProcessedEmailsTable);
+        await tableClient.CreateIfNotExistsAsync();
+
+        try
+        {
+            var response = await tableClient.GetEntityAsync<ProcessedEmailEntity>(PersonalPartition, messageId);
+            return response.Value;
+        }
+        catch (RequestFailedException ex) when (ex.Status == 404)
+        {
+            return null;
+        }
     }
 
     public Task<List<ProcessedEmailEntity>> GetEmailsSinceAsync(DateTimeOffset since) =>
