@@ -1,4 +1,5 @@
 using Alfred.Functions.Configuration;
+using Alfred.Functions.Models;
 using Alfred.Functions.Services.AI;
 using Alfred.Functions.Services.Calendar;
 using Alfred.Functions.Services.Gmail;
@@ -260,7 +261,8 @@ async Task TestChatQA()
 
     Console.WriteLine();
     Console.WriteLine("── Asking Claude... ──");
-    var answer = await summarizer.AnswerQuestionAsync(question, recentEmails, upcomingEvents);
+    // The harness asks one-off questions, so there is no conversation history to replay
+    var answer = await summarizer.AnswerQuestionAsync(question, recentEmails, upcomingEvents, new List<ChatTurnEntity>());
 
     Console.WriteLine();
     Console.WriteLine("── Answer: ──");

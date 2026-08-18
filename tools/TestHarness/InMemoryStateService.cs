@@ -85,6 +85,49 @@ public class InMemoryStateService : IStateService
     public Task<List<ProcessedEmailEntity>> GetPersonalEmailsSinceAsync(DateTimeOffset since) =>
         Task.FromResult(_personalEmails.Values.Where(e => e.ProcessedAt >= since).ToList());
 
+    private readonly Dictionary<long, List<ChatTurnEntity>> _chatTurns = new();
+
+    public Task SaveChatTurnAsync(long chatId, string question, string answer)
+    {
+        var now = DateTimeOffset.UtcNow;
+        if (!_chatTurns.TryGetValue(chatId, out var turns))
+        {
+            turns = new List<ChatTurnEntity>();
+            _chatTurns[chatId] = turns;
+        }
+
+        turns.Add(new ChatTurnEntity
+        {
+            PartitionKey = chatId.ToString(),
+            RowKey = (long.MaxValue - now.UtcTicks).ToString("D19"),
+            Question = question,
+            Answer = answer,
+            AskedAt = now
+        });
+
+        // Prune turns older than a day, matching the table implementation
+        turns.RemoveAll(t => t.AskedAt < now.AddDays(-1));
+        return Task.CompletedTask;
+    }
+
+    public Task<List<ChatTurnEntity>> GetRecentChatTurnsAsync(long chatId, DateTimeOffset since, int maxCount)
+    {
+        var turns = _chatTurns.GetValueOrDefault(chatId) ?? new List<ChatTurnEntity>();
+        var recent = turns
+            .Where(t => t.AskedAt >= since)
+            .OrderByDescending(t => t.AskedAt)
+            .Take(maxCount)
+            .Reverse() // chronological order for the prompt
+            .ToList();
+        return Task.FromResult(recent);
+    }
+
+    public Task ClearChatTurnsAsync(long chatId)
+    {
+        _chatTurns.Remove(chatId);
+        return Task.CompletedTask;
+    }
+
     public Task<CalendarEventEntity?> GetCalendarEventMappingAsync(string subjectHash) =>
         Task.FromResult(_events.GetValueOrDefault(subjectHash));
 
