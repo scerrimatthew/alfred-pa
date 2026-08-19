@@ -101,6 +101,17 @@ public class ClaudeSummarizerPromptTests
     }
 
     [Fact]
+    public void TriagePrompt_AsksForNewsLeadsFromAiNewsletters_WithoutAffectingAttention()
+    {
+        var prompt = BuildTriagePrompt(Email());
+
+        Assert.Contains("newsLeads", prompt);
+        // The contract: only genuine stories, and a lead-rich newsletter still files quietly
+        Assert.Contains("skip the newsletter's own promotions", prompt);
+        Assert.Contains("never affects requiresAttention", prompt);
+    }
+
+    [Fact]
     public void SummarizePrompt_CarriesEmailDocumentAndLinkSections()
     {
         var email = Email(

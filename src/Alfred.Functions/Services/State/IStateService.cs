@@ -34,7 +34,14 @@ public interface IStateService
     Task SaveNewsRuleAsync(string ruleId, string instruction);
     Task DeleteNewsRuleAsync(string ruleId);
     Task<List<ReportedNewsEntity>> GetReportedNewsSinceAsync(DateTimeOffset since);
+    Task<ReportedNewsEntity?> GetReportedNewsAsync(string rowKey);
     Task SaveReportedNewsAsync(List<AiNewsItem> items);
+    Task SaveNewsCandidatesAsync(List<NewsCandidateEntity> candidates);
+    Task<List<NewsCandidateEntity>> GetNewsCandidatesSinceAsync(DateTimeOffset since);
+    Task<NewsRequestStateEntity?> GetNewsRequestAsync();
+    Task SaveNewsRequestAsync(NewsRequestStateEntity entity);
+    Task ClearNewsRequestAsync();
+    Task<bool> TryClaimUpdateAsync(long updateId);
     Task<List<ProcessedEmailEntity>> GetEmailsSinceAsync(DateTimeOffset since);
     Task<List<ProcessedEmailEntity>> GetPersonalEmailsSinceAsync(DateTimeOffset since);
     Task SaveChatTurnAsync(long chatId, string question, string answer);

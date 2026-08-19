@@ -15,11 +15,19 @@ namespace Alfred.Functions.Functions;
 
 public class TelegramWebhookFunction
 {
+    // How far back reported AI-news stories are loaded into the personal chat context
+    // so "tell me more about that story" follow-ups can find them
+    private const int NewsChatLookbackDays = 7;
+
+    // An in-flight /news marker older than this is treated as crashed and ignored
+    private static readonly TimeSpan NewsRequestTimeout = TimeSpan.FromMinutes(10);
+
     private readonly IStateService _stateService;
     private readonly ICalendarService _calendarService;
     private readonly ISummarizerService _summarizerService;
     private readonly INotificationService _notificationService;
     private readonly IGmailReaderService _gmailReader;
+    private readonly INewsResearchService _newsResearch;
     private readonly AlfredOptions _options;
     private readonly ILogger<TelegramWebhookFunction> _logger;
 
@@ -29,6 +37,7 @@ public class TelegramWebhookFunction
         ISummarizerService summarizerService,
         INotificationService notificationService,
         IGmailReaderService gmailReader,
+        INewsResearchService newsResearch,
         IOptions<AlfredOptions> options,
         ILogger<TelegramWebhookFunction> logger)
     {
@@ -37,6 +46,7 @@ public class TelegramWebhookFunction
         _summarizerService = summarizerService;
         _notificationService = notificationService;
         _gmailReader = gmailReader;
+        _newsResearch = newsResearch;
         _options = options.Value;
         _logger = logger;
     }
@@ -60,6 +70,30 @@ public class TelegramWebhookFunction
         {
             using var doc = JsonDocument.Parse(body);
             var root = doc.RootElement;
+
+            // Telegram re-delivers updates it thinks failed (slow web-search answers, long
+            // /news runs) — claim each update_id once and drop duplicates. Fail open on a
+            // storage hiccup: a rare double answer beats a dropped message.
+            var updateId = root.TryGetProperty("update_id", out var updProp) ? updProp.GetInt64() : 0;
+            if (updateId != 0)
+            {
+                bool claimed;
+                try
+                {
+                    claimed = await _stateService.TryClaimUpdateAsync(updateId);
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Update-dedup claim failed for {UpdateId} — processing anyway", updateId);
+                    claimed = true;
+                }
+
+                if (!claimed)
+                {
+                    _logger.LogInformation("Dropped duplicate delivery of update {UpdateId}", updateId);
+                    return req.CreateResponse(System.Net.HttpStatusCode.OK);
+                }
+            }
 
             // Inline-button presses arrive as callback_query updates, not messages
             if (root.TryGetProperty("callback_query", out var callbackQuery))
@@ -108,6 +142,19 @@ public class TelegramWebhookFunction
                 return req.CreateResponse(System.Net.HttpStatusCode.OK);
             }
 
+            // "/news", "/news <topic>", and Telegram's command-menu form "/news@BotName" —
+            // but not /news-prefixed words like "/newsletter"
+            var newsMatch = System.Text.RegularExpressions.Regex.Match(
+                question.TrimStart(),
+                @"^/news(?:@\S+)?(?:\s+(?<topic>.*))?$",
+                System.Text.RegularExpressions.RegexOptions.IgnoreCase
+                    | System.Text.RegularExpressions.RegexOptions.Singleline);
+            if (isPersonalChat && newsMatch.Success)
+            {
+                await HandleNewsCommandAsync(chatId, newsMatch.Groups["topic"].Value.Trim());
+                return req.CreateResponse(System.Net.HttpStatusCode.OK);
+            }
+
             var command = question.Trim();
             if (command.Equals("/new", StringComparison.OrdinalIgnoreCase) ||
                 command.Equals("/reset", StringComparison.OrdinalIgnoreCase))
@@ -129,11 +176,13 @@ public class TelegramWebhookFunction
             {
                 var personalEmailsTask = _stateService.GetPersonalEmailsSinceAsync(lookbackSince);
                 var personalActionsTask = _calendarService.GetUpcomingPersonalEventsAsync(_options.ChatLookbackDays);
+                var recentNewsTask = _stateService.GetReportedNewsSinceAsync(
+                    DateTimeOffset.UtcNow.AddDays(-NewsChatLookbackDays));
 
-                await Task.WhenAll(emailsTask, eventsTask, historyTask, personalEmailsTask, personalActionsTask);
+                await Task.WhenAll(emailsTask, eventsTask, historyTask, personalEmailsTask, personalActionsTask, recentNewsTask);
 
-                _logger.LogInformation("Personal context loaded: {School} school + {Personal} personal emails, {Actions} actions, {Turns} chat turns",
-                    emailsTask.Result.Count, personalEmailsTask.Result.Count, personalActionsTask.Result.Count, historyTask.Result.Count);
+                _logger.LogInformation("Personal context loaded: {School} school + {Personal} personal emails, {Actions} actions, {News} news items, {Turns} chat turns",
+                    emailsTask.Result.Count, personalEmailsTask.Result.Count, personalActionsTask.Result.Count, recentNewsTask.Result.Count, historyTask.Result.Count);
 
                 answer = await _summarizerService.AnswerPersonalQuestionAsync(
                     question,
@@ -141,6 +190,7 @@ public class TelegramWebhookFunction
                     eventsTask.Result,
                     personalEmailsTask.Result,
                     personalActionsTask.Result,
+                    recentNewsTask.Result,
                     historyTask.Result,
                     ExecuteEmailToolAsync);
             }
@@ -319,6 +369,27 @@ public class TelegramWebhookFunction
                     : $"Noted — I'll keep {stats.SenderName} coming and won't suggest this again.";
             }
 
+            // 👍/👎 under a news digest item — arg is "+:<urlhash>" or "-:<urlhash>"
+            case "nf":
+            {
+                var thumbsUp = arg.StartsWith('+');
+                var story = await _stateService.GetReportedNewsAsync(arg.Length > 2 ? arg[2..] : "");
+                if (story is null)
+                    return "That story has aged out of my records — tell me in chat instead.";
+
+                var topic = !string.IsNullOrWhiteSpace(story.Category) ? $" (topic: {story.Category})" : "";
+                var instruction = thumbsUp
+                    ? $"More stories like \"{story.Headline}\"{topic} — Matthew flagged this one as exactly what he wants."
+                    : $"Fewer stories like \"{story.Headline}\"{topic} — Matthew flagged this one as not worth his time; drop this topic unless something major changes.";
+
+                // Keyed by the story hash so a second press (or a change of heart from 👍
+                // to 👎) replaces the rule instead of stacking contradictory ones
+                await _stateService.SaveNewsRuleAsync($"fb-{story.RowKey}", instruction);
+                return thumbsUp
+                    ? "Noted — more like that one."
+                    : "Noted — I'll steer away from that topic.";
+            }
+
             default:
                 return "I don't recognize that button anymore.";
         }
@@ -409,6 +480,85 @@ public class TelegramWebhookFunction
             + "(roughly every 15 minutes), categorizing, labeling, and picking up future deadlines. "
             + "No notifications along the way; I'll message you once when it's done. "
             + "Anything already processed is skipped automatically.");
+    }
+
+    // "/news" runs the AI-news research on demand; "/news <topic>" makes it a targeted
+    // sweep. Research takes minutes, and Telegram re-delivers updates it thinks failed, so
+    // a single-row marker drops duplicate triggers while a run is in flight.
+    private async Task HandleNewsCommandAsync(long chatId, string topic)
+    {
+        var existing = await _stateService.GetNewsRequestAsync();
+        if (existing is not null && existing.RequestedAt > DateTimeOffset.UtcNow - NewsRequestTimeout)
+        {
+            _logger.LogInformation("Ignoring /news — a research run started at {Time} is still in flight", existing.RequestedAt);
+            return;
+        }
+
+        var requestedAt = DateTimeOffset.UtcNow;
+        await _stateService.SaveNewsRequestAsync(new Models.NewsRequestStateEntity
+        {
+            RequestedAt = requestedAt,
+            Topic = string.IsNullOrWhiteSpace(topic) ? null : topic
+        });
+
+        // The topic is raw user text going into HTML-mode messages — escape it
+        var safeTopic = System.Net.WebUtility.HtmlEncode(topic);
+
+        try
+        {
+            await _notificationService.SendMessageAsync(chatId, string.IsNullOrWhiteSpace(topic)
+                ? "🗞 On it — sweeping the AI news now. Give me a couple of minutes."
+                : $"🗞 On it — running a targeted sweep on <b>{safeTopic}</b>. Give me a couple of minutes.");
+
+            var rules = await _stateService.GetNewsRulesAsync();
+            var recentlyReported = await _stateService.GetReportedNewsSinceAsync(
+                DateTimeOffset.UtcNow.AddDays(-AiNewsDigestFunction.CoveredLookbackDays));
+            var candidates = await _stateService.GetNewsCandidatesSinceAsync(
+                DateTimeOffset.UtcNow.AddHours(-AiNewsDigestFunction.CandidateLookbackHours));
+
+            var digest = await _newsResearch.ResearchDailyNewsAsync(
+                rules, recentlyReported, candidates,
+                string.IsNullOrWhiteSpace(topic) ? null : topic);
+
+            if (digest.Items.Count == 0 || string.IsNullOrWhiteSpace(digest.TelegramMessage))
+            {
+                // Unlike the evening timer, an on-demand run always answers
+                await _notificationService.SendMessageAsync(chatId, string.IsNullOrWhiteSpace(topic)
+                    ? "Nothing new worth your time since the last briefing — quiet out there."
+                    : $"Nothing substantial on <b>{safeTopic}</b> right now — I'll keep it on the radar.");
+                return;
+            }
+
+            await _notificationService.SendPersonalAlertAsync(
+                digest.TelegramMessage, AiNewsDigestFunction.BuildFeedbackButtons(digest.Items));
+
+            await _stateService.SaveReportedNewsAsync(digest.Items);
+
+            _logger.LogInformation("On-demand news digest sent ({ItemCount} items, topic: {Topic})",
+                digest.Items.Count, string.IsNullOrWhiteSpace(topic) ? "none" : topic);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "On-demand news research failed");
+            await _notificationService.SendMessageAsync(chatId,
+                "The news sweep hit a snag — try again in a few minutes.");
+        }
+        finally
+        {
+            // Only clear the marker this run wrote — a run that outlived the 10-minute
+            // timeout must not delete the marker of a successor that took over. A failure
+            // here must not mask the original exception; a leaked marker expires anyway.
+            try
+            {
+                var current = await _stateService.GetNewsRequestAsync();
+                if (current is not null && current.RequestedAt == requestedAt)
+                    await _stateService.ClearNewsRequestAsync();
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Failed to clear /news marker — it will expire on its own");
+            }
+        }
     }
 
     // "/evolve <instruction>" hands the instruction to a GitHub Actions workflow that runs a

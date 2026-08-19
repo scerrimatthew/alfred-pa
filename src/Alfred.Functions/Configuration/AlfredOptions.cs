@@ -38,6 +38,11 @@ public class AlfredOptions
     public bool AiNewsEnabled { get; set; } = true;
     public int AiNewsMaxItems { get; set; } = 5;
 
+    // Midday flash check for flag-level news that can't wait for the evening digest,
+    // and the Friday weekly synthesis. Both also require AiNewsEnabled.
+    public bool AiNewsFlashEnabled { get; set; } = true;
+    public bool AiNewsWeeklyEnabled { get; set; } = true;
+
     public bool IsInSummerBreak(DateTime maltaDate)
     {
         if (!TryParseMonthDay(SummerBreakStart, out var startMonth, out var startDay) ||

@@ -127,6 +127,29 @@ public class PersonalEmailMonitorFunction
 
                     await _gmailReader.MarkAsReadAndLabelAsync(email.MessageId, LabelNames.ForPersonal(triage.Category));
 
+                    // Newsletter-mined story leads feed the evening AI-news digest — best-effort
+                    if (triage.NewsLeads.Count > 0)
+                    {
+                        try
+                        {
+                            await _stateService.SaveNewsCandidatesAsync(triage.NewsLeads
+                                .Select(l => new NewsCandidateEntity
+                                {
+                                    Headline = l.Headline,
+                                    Url = l.Url,
+                                    Note = l.Note,
+                                    Source = email.SenderName
+                                })
+                                .ToList());
+                            _logger.LogInformation("Saved {Count} news leads from {Sender}",
+                                triage.NewsLeads.Count, email.SenderName);
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger.LogWarning(ex, "Failed to save news leads from {Sender}", email.SenderName);
+                        }
+                    }
+
                     // Sender tally feeds the monthly unsubscribe proposals — best-effort
                     if (!string.IsNullOrWhiteSpace(email.SenderEmail))
                     {

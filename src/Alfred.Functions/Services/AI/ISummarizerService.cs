@@ -15,6 +15,7 @@ public interface ISummarizerService
         List<Google.Apis.Calendar.v3.Data.Event> schoolEvents,
         List<ProcessedEmailEntity> personalEmails,
         List<Google.Apis.Calendar.v3.Data.Event> personalActions,
+        List<ReportedNewsEntity> recentNews,
         List<ChatTurnEntity> recentTurns,
         Func<string, System.Text.Json.Nodes.JsonNode?, Task<string>> executeTool);
 }

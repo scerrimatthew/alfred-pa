@@ -278,6 +278,68 @@ public class PersonalEmailMonitorFunctionTests
             Arg.Any<bool>(), Arg.Any<string?>(), Arg.Any<string?>(), Arg.Any<bool>(), Arg.Any<DateTimeOffset?>());
     }
 
+    // ---- Newsletter-mined news leads ----
+
+    [Fact]
+    public async Task NewsLeadsFromANewsletter_AreSavedAsCandidatesWithTheSenderAsSource()
+    {
+        var email = Email(messageId: "m1", senderName: "TLDR AI");
+        var leads = new List<NewsLead>
+        {
+            new() { Headline = "DORA 2026 lands", Url = "https://dora.dev/2026", Note = "Review times doubled" },
+            new() { Headline = "Funding round", Url = null, Note = null }
+        };
+        _gmail.GetNewPersonalEmailsAsync().Returns([email]);
+        _summarizer.TriagePersonalEmailAsync(email, Arg.Any<List<SuppressionRuleEntity>>(), Arg.Any<List<AttentionRuleEntity>>(), Arg.Any<List<ProcessedEmailEntity>>())
+            .Returns(Triage(newsLeads: leads));
+
+        List<NewsCandidateEntity>? saved = null;
+        _state.When(s => s.SaveNewsCandidatesAsync(Arg.Any<List<NewsCandidateEntity>>()))
+            .Do(ci => saved = ci.Arg<List<NewsCandidateEntity>>());
+
+        await CreateFunction().Run(Timer);
+
+        Assert.NotNull(saved);
+        Assert.Equal(2, saved.Count);
+        Assert.Equal("DORA 2026 lands", saved[0].Headline);
+        Assert.Equal("https://dora.dev/2026", saved[0].Url);
+        Assert.Equal("Review times doubled", saved[0].Note);
+        Assert.Equal("TLDR AI", saved[0].Source);
+        Assert.Null(saved[1].Url);
+        Assert.Equal("TLDR AI", saved[1].Source);
+    }
+
+    [Fact]
+    public async Task NoNewsLeads_TheOrdinaryCase_NeverTouchesTheCandidateStore()
+    {
+        var email = Email(messageId: "m1");
+        _gmail.GetNewPersonalEmailsAsync().Returns([email]);
+        _summarizer.TriagePersonalEmailAsync(email, Arg.Any<List<SuppressionRuleEntity>>(), Arg.Any<List<AttentionRuleEntity>>(), Arg.Any<List<ProcessedEmailEntity>>())
+            .Returns(Triage());
+
+        await CreateFunction().Run(Timer);
+
+        await _state.DidNotReceiveWithAnyArgs().SaveNewsCandidatesAsync(default!);
+    }
+
+    [Fact]
+    public async Task NewsLeadSaveFailure_IsBestEffort_TheEmailStillCompletes()
+    {
+        var email = Email(messageId: "m1", senderEmail: "news@tldr.tech");
+        _gmail.GetNewPersonalEmailsAsync().Returns([email]);
+        _summarizer.TriagePersonalEmailAsync(email, Arg.Any<List<SuppressionRuleEntity>>(), Arg.Any<List<AttentionRuleEntity>>(), Arg.Any<List<ProcessedEmailEntity>>())
+            .Returns(Triage(newsLeads: [new NewsLead { Headline = "H" }]));
+        _state.SaveNewsCandidatesAsync(Arg.Any<List<NewsCandidateEntity>>())
+            .ThrowsAsync(new TimeoutException("tables slow"));
+
+        await CreateFunction().Run(Timer);
+
+        // No error alert, and the rest of the pipeline (sender tally) still ran
+        await _notifications.DidNotReceiveWithAnyArgs().SendPersonalErrorAsync(default!);
+        await _state.ReceivedWithAnyArgs(1).MarkPersonalEmailProcessedAsync(default!, default!, default!, default!);
+        await _state.Received(1).RecordSenderSeenAsync("news@tldr.tech", email.SenderName, true, null, false);
+    }
+
     // ---- Backfill batches ----
 
     [Fact]
@@ -361,6 +423,25 @@ public class PersonalEmailMonitorFunctionTests
         await CreateFunction().Run(Timer);
 
         await _calendar.DidNotReceiveWithAnyArgs().ProcessPersonalEventsAsync(default!, default!);
+    }
+
+    [Fact]
+    public async Task Backfill_DeliberatelyDoesNotHarvestNewsLeads()
+    {
+        // Historical newsletters must not pollute tonight's candidate list
+        var old = Email(messageId: "old1", senderName: "TLDR AI");
+        var backfill = new BackfillStateEntity { OldestDate = DateTimeOffset.UtcNow.AddDays(-60) };
+
+        _state.GetBackfillStateAsync().Returns(backfill);
+        _gmail.GetBackfillBatchAsync(backfill.OldestDate, 20).Returns([old]);
+        _summarizer.TriagePersonalEmailAsync(old, Arg.Any<List<SuppressionRuleEntity>>(), Arg.Any<List<AttentionRuleEntity>>(), Arg.Any<List<ProcessedEmailEntity>>())
+            .Returns(Triage(newsLeads: [new NewsLead { Headline = "Old lead", Url = "https://old.example" }]));
+
+        await CreateFunction().Run(Timer);
+
+        await _state.DidNotReceiveWithAnyArgs().SaveNewsCandidatesAsync(default!);
+        // The email itself was still processed normally
+        await _state.ReceivedWithAnyArgs(1).MarkPersonalEmailProcessedAsync(default!, default!, default!, default!);
     }
 
     [Fact]

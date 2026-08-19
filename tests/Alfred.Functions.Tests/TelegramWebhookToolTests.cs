@@ -30,6 +30,7 @@ public class TelegramWebhookToolTests : IAsyncLifetime
     private readonly ISummarizerService _summarizer = Substitute.For<ISummarizerService>();
     private readonly INotificationService _notifications = Substitute.For<INotificationService>();
     private readonly IGmailReaderService _gmail = Substitute.For<IGmailReaderService>();
+    private readonly INewsResearchService _newsResearch = Substitute.For<INewsResearchService>();
 
     private Func<string, JsonNode?, Task<string>> _executeTool = null!;
 
@@ -39,13 +40,15 @@ public class TelegramWebhookToolTests : IAsyncLifetime
         _state.GetPersonalEmailsSinceAsync(Arg.Any<DateTimeOffset>()).Returns(new List<ProcessedEmailEntity>());
         _state.GetRecentChatTurnsAsync(Arg.Any<long>(), Arg.Any<DateTimeOffset>(), Arg.Any<int>())
             .Returns(new List<ChatTurnEntity>());
+        _state.GetReportedNewsSinceAsync(Arg.Any<DateTimeOffset>()).Returns(new List<ReportedNewsEntity>());
         _calendar.GetUpcomingEventsAsync(Arg.Any<int>()).Returns(new List<Event>());
         _calendar.GetUpcomingPersonalEventsAsync(Arg.Any<int>()).Returns(new List<Event>());
 
         Func<string, JsonNode?, Task<string>>? captured = null;
         _summarizer.AnswerPersonalQuestionAsync(
                 Arg.Any<string>(), Arg.Any<List<ProcessedEmailEntity>>(), Arg.Any<List<Event>>(),
-                Arg.Any<List<ProcessedEmailEntity>>(), Arg.Any<List<Event>>(), Arg.Any<List<ChatTurnEntity>>(),
+                Arg.Any<List<ProcessedEmailEntity>>(), Arg.Any<List<Event>>(), Arg.Any<List<ReportedNewsEntity>>(),
+                Arg.Any<List<ChatTurnEntity>>(),
                 Arg.Do<Func<string, JsonNode?, Task<string>>>(f => captured = f))
             .Returns("answer");
 
@@ -55,7 +58,7 @@ public class TelegramWebhookToolTests : IAsyncLifetime
             o.PersonalTelegramChatId = PersonalChatId.ToString();
         });
         var function = new TelegramWebhookFunction(
-            _state, _calendar, _summarizer, _notifications, _gmail, options,
+            _state, _calendar, _summarizer, _notifications, _gmail, _newsResearch, options,
             NullLogger<TelegramWebhookFunction>.Instance);
 
         var body = JsonSerializer.Serialize(new

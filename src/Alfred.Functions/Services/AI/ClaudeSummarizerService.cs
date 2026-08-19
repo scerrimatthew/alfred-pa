@@ -298,6 +298,7 @@ public class ClaudeSummarizerService : ISummarizerService
         List<Google.Apis.Calendar.v3.Data.Event> schoolEvents,
         List<ProcessedEmailEntity> personalEmails,
         List<Google.Apis.Calendar.v3.Data.Event> personalActions,
+        List<ReportedNewsEntity> recentNews,
         List<ChatTurnEntity> recentTurns,
         Func<string, System.Text.Json.Nodes.JsonNode?, Task<string>> executeTool)
     {
@@ -338,15 +339,32 @@ public class ClaudeSummarizerService : ISummarizerService
             }))
             : "No upcoming personal actions.";
 
+        var recentNewsList = recentNews.Count > 0
+            ? string.Join("\n", recentNews.OrderByDescending(n => n.ReportedAt).Select(n =>
+            {
+                var summary = !string.IsNullOrWhiteSpace(n.Summary) ? $": {n.Summary}" : "";
+                var why = !string.IsNullOrWhiteSpace(n.WhyItMatters) ? $" | why it mattered: {n.WhyItMatters}" : "";
+                return $"- [{n.ReportedAt:ddd d MMM}] [{n.Category ?? "uncategorized"}] {n.Headline} ({n.Url}){summary}{why}";
+            }))
+            : "No AI news reported recently.";
+
         var systemPrompt = $"""
             You are Alfred, Matthew's personal assistant, chatting with him directly on Telegram.
             Today is {today}.
 
-            You have two kinds of context:
+            You have three kinds of context:
             - SCHOOL: emails and calendar events for Valentina, a Year 1 Bluebells student at
               Sacred Heart College Junior School (moving to Year 2 in September/October 2026)
             - PERSONAL: Matthew's own inbox (invoices, appointments, deadlines) and the personal
               calendar actions Alfred created for him
+            - RECENT AI NEWS: the stories Alfred's evening AI-news briefing reported to Matthew
+              lately. When he follows up on one ("tell me more about that DORA story", "what was
+              that consultancy launch about?"), match it by headline/topic, then use web_search
+              to pull the PRIMARY source (and related coverage if useful) and give him a proper
+              read-out: what actually happened, the key numbers, and what it means for Cleverbit's
+              bet. Link the sources you used. Only use web_search for news follow-ups or when he
+              explicitly asks you to look something up online — never for questions his emails
+              and calendar can answer.
 
             Answer ONLY what was asked, but completely — include every relevant item.
             Reply the way a human PA would text: conversational, direct, and brief. Use prose
@@ -449,6 +467,9 @@ public class ClaudeSummarizerService : ISummarizerService
 
             ## PERSONAL ACTIONS (Alfred-created calendar entries)
             {personalActionsList}
+
+            ## RECENT AI NEWS (stories the evening briefing already reported)
+            {recentNewsList}
 
             {FormatConversationSection(recentTurns)}## QUESTION
             {question}
@@ -695,30 +716,48 @@ public class ClaudeSummarizerService : ISummarizerService
                 """))
         };
 
+        // Server-side web search for AI-news follow-ups ("tell me more about that DORA
+        // story") and explicit look-this-up requests
+        tools.Add(ServerTools.GetWebSearchTool(maxUses: 5));
+
         var messages = new List<Message> { new(RoleType.User, userPrompt) };
 
         var parameters = new MessageParameters
         {
             Model = Anthropic.SDK.Constants.AnthropicModels.Claude46Opus,
-            MaxTokens = 2048,
+            // Web-search turns carry search narration on top of the answer
+            MaxTokens = 4096,
             System = [new SystemMessage(systemPrompt)],
             Messages = messages,
             Tools = tools
         };
 
         // Enough room for a search -> refine -> read -> act -> answer chain
-        for (var iteration = 0; iteration < 8; iteration++)
+        for (var iteration = 0; iteration < 10; iteration++)
         {
             var response = await client.Messages.GetClaudeMessageAsync(parameters);
+
+            if (response.StopReason == "pause_turn")
+            {
+                // Server-side web search paused mid-turn — append the FULL partial content
+                // (server_tool_use / result blocks included; response.Message would strip
+                // them and restart the search) and re-send so the server resumes
+                messages.Add(new Message { Role = RoleType.Assistant, Content = response.Content });
+                continue;
+            }
 
             var toolUses = response.Content?.OfType<ToolUseContent>().ToList() ?? [];
             if (toolUses.Count == 0)
             {
-                return response.Content?.OfType<TextContent>().FirstOrDefault()?.Text
+                // With server tools in play the answer is the LAST text block — earlier
+                // ones are search narration interleaved with result blocks
+                return response.Content?.OfType<TextContent>().LastOrDefault()?.Text
                     ?? "Sorry, I couldn't generate an answer. Please try again.";
             }
 
-            messages.Add(response.Message);
+            // Full content, not response.Message — a turn can mix web-search blocks with
+            // client tool calls, and the stripped copy would corrupt the conversation
+            messages.Add(new Message { Role = RoleType.Assistant, Content = response.Content });
 
             foreach (var toolUse in toolUses)
             {
@@ -1075,6 +1114,19 @@ public class ClaudeSummarizerService : ISummarizerService
                notes. Alfred nudges Matthew about unanswered needsReply emails, so be
                conservative — a wrong true nags him about nothing.
 
+            8. "newsLeads": ONLY when this email is a newsletter or briefing substantially about
+               AI / the software industry (an AI newsletter, a dev-tools digest, an industry
+               round-up), extract the concrete news stories it mentions — Alfred feeds them to a
+               separate evening AI-news briefing as candidate leads. Each lead:
+               - "headline": the story in a short phrase
+               - "url": the story's link if one is in the email (the article, not the
+                 newsletter's own tracking/subscribe links), else null
+               - "note": one short sentence of what the newsletter says about it, or null
+               List the genuine news stories only — skip the newsletter's own promotions, jobs,
+               sponsor slots, and tutorials. For every other kind of email, use an empty array.
+               This field never affects requiresAttention: a newsletter full of leads is still
+               filed quietly.
+
             Email Subject: {email.Subject}
             From: {email.SenderName} <{email.SenderEmail}>
             To: Matthew (scerri.matthew@gmail.com)
@@ -1140,7 +1192,8 @@ public class ClaudeSummarizerService : ISummarizerService
                 MatchedAttentionRule = matchedAttentionRule,
                 FraudWarning = fraudWarning,
                 NeedsReply = root.TryGetProperty("needsReply", out var nrProp)
-                    && nrProp.ValueKind == JsonValueKind.True
+                    && nrProp.ValueKind == JsonValueKind.True,
+                NewsLeads = ParseNewsLeads(root)
             };
         }
         catch (JsonException)
@@ -1154,6 +1207,35 @@ public class ClaudeSummarizerService : ISummarizerService
                 TelegramMessage = $"📬 <b>{email.Subject}</b>\nFrom: {email.SenderName}\n\nAlfred could not summarize this email — please check Gmail directly."
             };
         }
+    }
+
+    private static List<NewsLead> ParseNewsLeads(JsonElement root)
+    {
+        var leads = new List<NewsLead>();
+        if (!root.TryGetProperty("newsLeads", out var leadsProp) || leadsProp.ValueKind != JsonValueKind.Array)
+            return leads;
+
+        foreach (var lead in leadsProp.EnumerateArray())
+        {
+            var headline = lead.TryGetProperty("headline", out var hProp) && hProp.ValueKind == JsonValueKind.String
+                ? hProp.GetString()
+                : null;
+            if (string.IsNullOrWhiteSpace(headline))
+                continue;
+
+            leads.Add(new NewsLead
+            {
+                Headline = headline,
+                Url = lead.TryGetProperty("url", out var uProp) && uProp.ValueKind == JsonValueKind.String
+                    ? uProp.GetString()
+                    : null,
+                Note = lead.TryGetProperty("note", out var nProp) && nProp.ValueKind == JsonValueKind.String
+                    ? nProp.GetString()
+                    : null
+            });
+        }
+
+        return leads;
     }
 
     internal static (string System, string User) BuildDigestPrompt(string todayStr, string emailSummaries, int emailCount, string eventsList, string homeworkSummary)

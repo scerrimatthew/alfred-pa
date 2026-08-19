@@ -15,5 +15,7 @@ public class ReportedNewsEntity : ITableEntity
     public string Headline { get; set; } = string.Empty;
     public string Url { get; set; } = string.Empty;
     public string? Category { get; set; }
+    public string? Summary { get; set; }
+    public string? WhyItMatters { get; set; }
     public DateTimeOffset ReportedAt { get; set; }
 }

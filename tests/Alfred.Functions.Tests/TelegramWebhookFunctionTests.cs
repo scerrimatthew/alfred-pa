@@ -30,6 +30,11 @@ public class TelegramWebhookFunctionTests
     private readonly ISummarizerService _summarizer = Substitute.For<ISummarizerService>();
     private readonly INotificationService _notifications = Substitute.For<INotificationService>();
     private readonly IGmailReaderService _gmail = Substitute.For<IGmailReaderService>();
+    private readonly INewsResearchService _newsResearch = Substitute.For<INewsResearchService>();
+
+    // Backing store for the /news in-flight marker, so Save/Get/Clear behave like the
+    // real single-row table and the finally-block ownership check sees its own write
+    private NewsRequestStateEntity? _newsMarker;
 
     public TelegramWebhookFunctionTests()
     {
@@ -38,19 +43,32 @@ public class TelegramWebhookFunctionTests
         _state.GetRecentChatTurnsAsync(Arg.Any<long>(), Arg.Any<DateTimeOffset>(), Arg.Any<int>())
             .Returns(new List<ChatTurnEntity>());
         _state.GetBackfillStateAsync().Returns((BackfillStateEntity?)null);
+        _state.GetReportedNewsSinceAsync(Arg.Any<DateTimeOffset>()).Returns(new List<ReportedNewsEntity>());
+        _state.GetNewsCandidatesSinceAsync(Arg.Any<DateTimeOffset>()).Returns(new List<NewsCandidateEntity>());
+        _state.GetNewsRulesAsync().Returns(new List<NewsRuleEntity>());
+        _state.GetNewsRequestAsync().Returns(_ => _newsMarker);
+        _state.When(s => s.SaveNewsRequestAsync(Arg.Any<NewsRequestStateEntity>()))
+            .Do(ci => _newsMarker = ci.Arg<NewsRequestStateEntity>());
+        _state.When(s => s.ClearNewsRequestAsync()).Do(_ => _newsMarker = null);
+        _state.TryClaimUpdateAsync(Arg.Any<long>()).Returns(true);
         _calendar.GetUpcomingEventsAsync(Arg.Any<int>()).Returns(new List<Event>());
         _calendar.GetUpcomingPersonalEventsAsync(Arg.Any<int>()).Returns(new List<Event>());
         _summarizer.AnswerQuestionAsync(Arg.Any<string>(), Arg.Any<List<ProcessedEmailEntity>>(), Arg.Any<List<Event>>(), Arg.Any<List<ChatTurnEntity>>())
             .Returns("school answer");
         _summarizer.AnswerPersonalQuestionAsync(
                 Arg.Any<string>(), Arg.Any<List<ProcessedEmailEntity>>(), Arg.Any<List<Event>>(),
-                Arg.Any<List<ProcessedEmailEntity>>(), Arg.Any<List<Event>>(), Arg.Any<List<ChatTurnEntity>>(),
+                Arg.Any<List<ProcessedEmailEntity>>(), Arg.Any<List<Event>>(), Arg.Any<List<ReportedNewsEntity>>(),
+                Arg.Any<List<ChatTurnEntity>>(),
                 Arg.Any<Func<string, System.Text.Json.Nodes.JsonNode?, Task<string>>>())
             .Returns("personal answer");
+        _newsResearch.ResearchDailyNewsAsync(
+                Arg.Any<List<NewsRuleEntity>>(), Arg.Any<List<ReportedNewsEntity>>(),
+                Arg.Any<List<NewsCandidateEntity>>(), Arg.Any<string?>())
+            .Returns(new AiNewsDigest());
     }
 
     private TelegramWebhookFunction CreateFunction(Action<AlfredOptions>? mutate = null) =>
-        new(_state, _calendar, _summarizer, _notifications, _gmail,
+        new(_state, _calendar, _summarizer, _notifications, _gmail, _newsResearch,
             Options(o =>
             {
                 o.TelegramWebhookSecret = Secret;
@@ -62,8 +80,14 @@ public class TelegramWebhookFunctionTests
     private static string MessageUpdate(long chatId, long userId, string text) =>
         JsonSerializer.Serialize(new { message = new { chat = new { id = chatId }, from = new { id = userId }, text } });
 
+    private static string MessageUpdateWithId(long updateId, long chatId, long userId, string text) =>
+        JsonSerializer.Serialize(new { update_id = updateId, message = new { chat = new { id = chatId }, from = new { id = userId }, text } });
+
     private static string CallbackUpdate(string id, long userId, string? data) =>
         JsonSerializer.Serialize(new { callback_query = new { id, from = new { id = userId }, data } });
+
+    private static string CallbackUpdateWithId(long updateId, string id, long userId, string? data) =>
+        JsonSerializer.Serialize(new { update_id = updateId, callback_query = new { id, from = new { id = userId }, data } });
 
     private Task<HttpStatusCode> RunAsync(string body, string secret = Secret, Action<AlfredOptions>? mutate = null) =>
         RunAsync(CreateFunction(mutate), body, secret);
@@ -98,6 +122,79 @@ public class TelegramWebhookFunctionTests
         Assert.Equal(HttpStatusCode.OK, status);
         await _summarizer.DidNotReceiveWithAnyArgs().AnswerQuestionAsync(default!, default!, default!, default!);
         await _notifications.DidNotReceiveWithAnyArgs().SendMessageAsync(default, default!);
+    }
+
+    // ---- Update dedup (Telegram re-deliveries) ----
+
+    [Fact]
+    public async Task FreshUpdate_IsClaimedOnceAndProcessedNormally()
+    {
+        var status = await RunAsync(MessageUpdateWithId(777001, SchoolChatId, UserId, "hi"));
+
+        Assert.Equal(HttpStatusCode.OK, status);
+        await _state.Received(1).TryClaimUpdateAsync(777001);
+        await _notifications.Received(1).SendMessageAsync(SchoolChatId, "school answer");
+    }
+
+    [Fact]
+    public async Task DuplicateMessageDelivery_IsDroppedBeforeAnyProcessing()
+    {
+        _state.TryClaimUpdateAsync(777001).Returns(false);
+
+        var status = await RunAsync(MessageUpdateWithId(777001, PersonalChatId, UserId, "any bills due?"));
+
+        // Telegram still gets its 200 (or it would retry forever), but nothing ran
+        Assert.Equal(HttpStatusCode.OK, status);
+        await _summarizer.DidNotReceiveWithAnyArgs().AnswerQuestionAsync(default!, default!, default!, default!);
+        await _summarizer.DidNotReceiveWithAnyArgs().AnswerPersonalQuestionAsync(
+            default!, default!, default!, default!, default!, default!, default!, default!);
+        await _notifications.DidNotReceiveWithAnyArgs().SendMessageAsync(default, default!);
+    }
+
+    [Fact]
+    public async Task DuplicateCommandDelivery_NeverReachesTheCommandHandlers()
+    {
+        _state.TryClaimUpdateAsync(777002).Returns(false);
+
+        await RunAsync(MessageUpdateWithId(777002, PersonalChatId, UserId, "/news"));
+
+        await _newsResearch.DidNotReceiveWithAnyArgs().ResearchDailyNewsAsync(default!, default!, default!, default);
+        await _state.DidNotReceiveWithAnyArgs().SaveNewsRequestAsync(default!);
+    }
+
+    [Fact]
+    public async Task DuplicateCallbackDelivery_IsDroppedBeforeTheButtonAction()
+    {
+        _state.TryClaimUpdateAsync(777003).Returns(false);
+
+        var status = await RunAsync(CallbackUpdateWithId(777003, "cb1", UserId, "mu:m1"));
+
+        Assert.Equal(HttpStatusCode.OK, status);
+        await _gmail.DidNotReceiveWithAnyArgs().MarkAsUnreadAsync(default!);
+        await _notifications.DidNotReceiveWithAnyArgs().AnswerCallbackAsync(default!, default);
+    }
+
+    [Theory]
+    [InlineData("""{"message":{"chat":{"id":555},"from":{"id":42},"text":"hi"}}""")] // no update_id at all
+    [InlineData("""{"update_id":0,"message":{"chat":{"id":555},"from":{"id":42},"text":"hi"}}""")] // sentinel zero
+    public async Task UpdateWithoutAUsableId_SkipsTheClaimAndStillProcesses(string body)
+    {
+        await RunAsync(body);
+
+        await _state.DidNotReceiveWithAnyArgs().TryClaimUpdateAsync(default);
+        await _notifications.Received(1).SendMessageAsync(SchoolChatId, "school answer");
+    }
+
+    [Fact]
+    public async Task ClaimStorageFailure_FailsOpen_TheMessageIsStillAnswered()
+    {
+        // A rare double answer beats a dropped message
+        _state.TryClaimUpdateAsync(Arg.Any<long>()).ThrowsAsync(new TimeoutException("tables down"));
+
+        var status = await RunAsync(MessageUpdateWithId(777004, SchoolChatId, UserId, "hi"));
+
+        Assert.Equal(HttpStatusCode.OK, status);
+        await _notifications.Received(1).SendMessageAsync(SchoolChatId, "school answer");
     }
 
     // ---- Authorization ----
@@ -142,7 +239,7 @@ public class TelegramWebhookFunctionTests
         await _summarizer.Received(1).AnswerQuestionAsync(
             "what's on tomorrow?", Arg.Any<List<ProcessedEmailEntity>>(), Arg.Any<List<Event>>(), Arg.Any<List<ChatTurnEntity>>());
         await _summarizer.DidNotReceiveWithAnyArgs().AnswerPersonalQuestionAsync(
-            default!, default!, default!, default!, default!, default!, default!);
+            default!, default!, default!, default!, default!, default!, default!, default!);
         await _notifications.Received(1).SendMessageAsync(SchoolChatId, "school answer");
         await _state.Received(1).SaveChatTurnAsync(SchoolChatId, "what's on tomorrow?", "school answer");
     }
@@ -156,9 +253,37 @@ public class TelegramWebhookFunctionTests
             "any bills due?",
             Arg.Any<List<ProcessedEmailEntity>>(), Arg.Any<List<Event>>(),
             Arg.Any<List<ProcessedEmailEntity>>(), Arg.Any<List<Event>>(),
-            Arg.Any<List<ChatTurnEntity>>(),
+            Arg.Any<List<ReportedNewsEntity>>(), Arg.Any<List<ChatTurnEntity>>(),
             Arg.Any<Func<string, System.Text.Json.Nodes.JsonNode?, Task<string>>>());
         await _notifications.Received(1).SendMessageAsync(PersonalChatId, "personal answer");
+    }
+
+    [Fact]
+    public async Task PersonalChatQuestion_LoadsAWeekOfReportedNewsIntoTheContext()
+    {
+        var recentNews = new List<ReportedNewsEntity> { new() { RowKey = "s1", Headline = "DORA lands" } };
+        _state.GetReportedNewsSinceAsync(Arg.Any<DateTimeOffset>()).Returns(recentNews);
+
+        await RunAsync(MessageUpdate(PersonalChatId, UserId, "what was that DORA story?"));
+
+        var expected = DateTimeOffset.UtcNow.AddDays(-7);
+        await _state.Received(1).GetReportedNewsSinceAsync(
+            Arg.Is<DateTimeOffset>(since => (since - expected).Duration() < TimeSpan.FromMinutes(5)));
+        // The loaded stories must reach the summarizer verbatim
+        await _summarizer.Received(1).AnswerPersonalQuestionAsync(
+            "what was that DORA story?",
+            Arg.Any<List<ProcessedEmailEntity>>(), Arg.Any<List<Event>>(),
+            Arg.Any<List<ProcessedEmailEntity>>(), Arg.Any<List<Event>>(),
+            recentNews, Arg.Any<List<ChatTurnEntity>>(),
+            Arg.Any<Func<string, System.Text.Json.Nodes.JsonNode?, Task<string>>>());
+    }
+
+    [Fact]
+    public async Task SchoolChatQuestion_NeverLoadsReportedNews()
+    {
+        await RunAsync(MessageUpdate(SchoolChatId, UserId, "what's on tomorrow?"));
+
+        await _state.DidNotReceiveWithAnyArgs().GetReportedNewsSinceAsync(default);
     }
 
     [Fact]
@@ -297,6 +422,277 @@ public class TelegramWebhookFunctionTests
         await _state.DidNotReceiveWithAnyArgs().SaveBackfillStateAsync(default!);
         await _summarizer.Received(1).AnswerQuestionAsync(
             "/backfill 30", Arg.Any<List<ProcessedEmailEntity>>(), Arg.Any<List<Event>>(), Arg.Any<List<ChatTurnEntity>>());
+    }
+
+    // ---- /news command ----
+
+    private AiNewsDigest SetUpNewsResult(string message = "🗞 One story tonight.")
+    {
+        var digest = new AiNewsDigest
+        {
+            TelegramMessage = message,
+            Items = [new AiNewsItem { Headline = "DORA lands", Url = "https://dora.dev/2026" }]
+        };
+        _newsResearch.ResearchDailyNewsAsync(
+                Arg.Any<List<NewsRuleEntity>>(), Arg.Any<List<ReportedNewsEntity>>(),
+                Arg.Any<List<NewsCandidateEntity>>(), Arg.Any<string?>())
+            .Returns(digest);
+        return digest;
+    }
+
+    [Fact]
+    public async Task News_Bare_MarksTheRunInFlight_ResearchesWithoutATopic_SendsWithButtons_ThenClearsTheMarker()
+    {
+        var digest = SetUpNewsResult();
+
+        NewsRequestStateEntity? marker = null;
+        _state.When(s => s.SaveNewsRequestAsync(Arg.Any<NewsRequestStateEntity>()))
+            .Do(ci => marker = ci.Arg<NewsRequestStateEntity>());
+
+        await RunAsync(MessageUpdate(PersonalChatId, UserId, "/news"));
+
+        // The in-flight marker dedups Telegram's re-deliveries while research runs
+        Assert.NotNull(marker);
+        Assert.Null(marker.Topic);
+        Assert.True((DateTimeOffset.UtcNow - marker.RequestedAt).Duration() < TimeSpan.FromMinutes(1));
+
+        await _notifications.Received(1).SendMessageAsync(PersonalChatId, Arg.Is<string>(m => m.Contains("sweeping the AI news")));
+        await _newsResearch.Received(1).ResearchDailyNewsAsync(
+            Arg.Any<List<NewsRuleEntity>>(), Arg.Any<List<ReportedNewsEntity>>(),
+            Arg.Any<List<NewsCandidateEntity>>(), null);
+
+        // The digest goes out with the standard 👍/👎 feedback buttons and is recorded
+        await _notifications.Received(1).SendPersonalAlertAsync(
+            "🗞 One story tonight.",
+            Arg.Is<IReadOnlyList<NotificationButton>?>(b =>
+                b != null && b.Count == 2 && b[0].CallbackData.StartsWith("nf:+:")));
+        await _state.Received(1).SaveReportedNewsAsync(digest.Items);
+        await _state.Received(1).ClearNewsRequestAsync();
+        // A command is not a question — the Q&A path must stay untouched
+        await _summarizer.DidNotReceiveWithAnyArgs().AnswerPersonalQuestionAsync(
+            default!, default!, default!, default!, default!, default!, default!, default!);
+    }
+
+    [Fact]
+    public async Task News_WithTopic_RunsATargetedSweep()
+    {
+        SetUpNewsResult();
+
+        NewsRequestStateEntity? marker = null;
+        _state.When(s => s.SaveNewsRequestAsync(Arg.Any<NewsRequestStateEntity>()))
+            .Do(ci => marker = ci.Arg<NewsRequestStateEntity>());
+
+        await RunAsync(MessageUpdate(PersonalChatId, UserId, "/news EU AI Act"));
+
+        Assert.NotNull(marker);
+        Assert.Equal("EU AI Act", marker.Topic);
+        await _notifications.Received(1).SendMessageAsync(
+            PersonalChatId, Arg.Is<string>(m => m.Contains("targeted sweep") && m.Contains("<b>EU AI Act</b>")));
+        await _newsResearch.Received(1).ResearchDailyNewsAsync(
+            Arg.Any<List<NewsRuleEntity>>(), Arg.Any<List<ReportedNewsEntity>>(),
+            Arg.Any<List<NewsCandidateEntity>>(), "EU AI Act");
+    }
+
+    [Fact]
+    public async Task News_TopicWithHtmlCharacters_IsEscapedInTheAck()
+    {
+        SetUpNewsResult();
+
+        await RunAsync(MessageUpdate(PersonalChatId, UserId, "/news <agents & tools>"));
+
+        // Raw user text goes into an HTML-mode message — it must arrive escaped
+        await _notifications.Received(1).SendMessageAsync(
+            PersonalChatId, Arg.Is<string>(m => m.Contains("&lt;agents &amp; tools&gt;") && !m.Contains("<agents")));
+    }
+
+    [Fact]
+    public async Task News_WhileARunIsInFlight_IsDroppedCompletelySilently()
+    {
+        _newsMarker = new NewsRequestStateEntity
+        {
+            RequestedAt = DateTimeOffset.UtcNow.AddMinutes(-5)
+        };
+
+        var status = await RunAsync(MessageUpdate(PersonalChatId, UserId, "/news"));
+
+        Assert.Equal(HttpStatusCode.OK, status);
+        // A silent drop: no ack, no research, no new marker — and the in-flight
+        // run's own finally must not be preempted by clearing its marker here
+        await _notifications.DidNotReceiveWithAnyArgs().SendMessageAsync(default, default!);
+        await _newsResearch.DidNotReceiveWithAnyArgs().ResearchDailyNewsAsync(default!, default!, default!, default);
+        await _state.DidNotReceiveWithAnyArgs().SaveNewsRequestAsync(default!);
+        await _state.DidNotReceive().ClearNewsRequestAsync();
+    }
+
+    [Fact]
+    public async Task News_StaleMarkerFromACrashedRun_IsIgnoredAndTheSweepProceeds()
+    {
+        _newsMarker = new NewsRequestStateEntity
+        {
+            RequestedAt = DateTimeOffset.UtcNow.AddMinutes(-30)
+        };
+        SetUpNewsResult();
+
+        await RunAsync(MessageUpdate(PersonalChatId, UserId, "/news"));
+
+        await _newsResearch.Received(1).ResearchDailyNewsAsync(
+            Arg.Any<List<NewsRuleEntity>>(), Arg.Any<List<ReportedNewsEntity>>(),
+            Arg.Any<List<NewsCandidateEntity>>(), null);
+    }
+
+    [Theory]
+    [InlineData("/news@AlfredBot", null)]         // Telegram's command-menu form
+    [InlineData("/news@AlfredBot EU AI Act", "EU AI Act")]
+    [InlineData("/NEWS", null)]                   // case-insensitive
+    public async Task News_BotNameSuffixAndCase_StillTriggerTheCommand(string text, string? expectedTopic)
+    {
+        SetUpNewsResult();
+
+        await RunAsync(MessageUpdate(PersonalChatId, UserId, text));
+
+        await _newsResearch.Received(1).ResearchDailyNewsAsync(
+            Arg.Any<List<NewsRuleEntity>>(), Arg.Any<List<ReportedNewsEntity>>(),
+            Arg.Any<List<NewsCandidateEntity>>(), expectedTopic);
+        await _summarizer.DidNotReceiveWithAnyArgs().AnswerPersonalQuestionAsync(
+            default!, default!, default!, default!, default!, default!, default!, default!);
+    }
+
+    [Fact]
+    public async Task News_MarkerReplacedByASuccessorRun_IsLeftForTheSuccessorToClear()
+    {
+        // This run outlives the 10-minute timeout; a successor takes over and writes its
+        // own marker while the research is still in flight
+        var successor = new NewsRequestStateEntity { RequestedAt = DateTimeOffset.UtcNow.AddMinutes(5), Topic = "successor" };
+        var digest = new AiNewsDigest
+        {
+            TelegramMessage = "🗞 One story tonight.",
+            Items = [new AiNewsItem { Headline = "H", Url = "https://u" }]
+        };
+        _newsResearch.ResearchDailyNewsAsync(
+                Arg.Any<List<NewsRuleEntity>>(), Arg.Any<List<ReportedNewsEntity>>(),
+                Arg.Any<List<NewsCandidateEntity>>(), Arg.Any<string?>())
+            .Returns(ci =>
+            {
+                _newsMarker = successor;
+                return digest;
+            });
+
+        await RunAsync(MessageUpdate(PersonalChatId, UserId, "/news"));
+
+        // The finally must recognize the marker is no longer its own and leave it alone
+        await _state.DidNotReceive().ClearNewsRequestAsync();
+        Assert.Same(successor, _newsMarker);
+        // The run itself still completed normally
+        await _notifications.Received(1).SendPersonalAlertAsync(
+            "🗞 One story tonight.", Arg.Any<IReadOnlyList<NotificationButton>?>());
+    }
+
+    [Fact]
+    public async Task News_ClearFailingInTheFinally_IsAWarningNotAnError()
+    {
+        SetUpNewsResult();
+        _state.ClearNewsRequestAsync().ThrowsAsync(new TimeoutException("tables down"));
+
+        var logger = Substitute.For<Microsoft.Extensions.Logging.ILogger<TelegramWebhookFunction>>();
+        var function = new TelegramWebhookFunction(
+            _state, _calendar, _summarizer, _notifications, _gmail, _newsResearch,
+            Options(o =>
+            {
+                o.TelegramWebhookSecret = Secret;
+                o.PersonalTelegramChatId = PersonalChatId.ToString();
+            }),
+            logger);
+
+        var status = await RunAsync(function, MessageUpdate(PersonalChatId, UserId, "/news"));
+
+        Assert.Equal(HttpStatusCode.OK, status);
+        // The digest went out untouched by the cleanup failure
+        await _notifications.Received(1).SendPersonalAlertAsync(
+            "🗞 One story tonight.", Arg.Any<IReadOnlyList<NotificationButton>?>());
+        // ...and the failure never bubbled to the outer error handler
+        Assert.DoesNotContain(logger.ReceivedCalls(), c =>
+            c.GetMethodInfo().Name == "Log"
+            && Equals(c.GetArguments()[0], Microsoft.Extensions.Logging.LogLevel.Error));
+    }
+
+    [Fact]
+    public async Task News_MarkerReadFailingInTheFinally_DoesNotSurfaceEither()
+    {
+        SetUpNewsResult();
+        // First read is the in-flight check; the second (in the finally) blows up
+        _state.GetNewsRequestAsync().Returns(
+            _ => _newsMarker,
+            _ => throw new TimeoutException("tables down"));
+
+        var status = await RunAsync(MessageUpdate(PersonalChatId, UserId, "/news"));
+
+        Assert.Equal(HttpStatusCode.OK, status);
+        await _notifications.Received(1).SendPersonalAlertAsync(
+            "🗞 One story tonight.", Arg.Any<IReadOnlyList<NotificationButton>?>());
+        // Without the ownership check completing, the marker must be left alone
+        await _state.DidNotReceive().ClearNewsRequestAsync();
+    }
+
+    [Fact]
+    public async Task News_QuietResult_StillAnswers_UnlikeTheEveningTimer()
+    {
+        await RunAsync(MessageUpdate(PersonalChatId, UserId, "/news"));
+
+        await _notifications.Received(1).SendMessageAsync(
+            PersonalChatId, Arg.Is<string>(m => m.Contains("Nothing new worth your time")));
+        await _notifications.DidNotReceiveWithAnyArgs().SendPersonalAlertAsync(default!);
+        await _state.DidNotReceiveWithAnyArgs().SaveReportedNewsAsync(default!);
+        await _state.Received(1).ClearNewsRequestAsync();
+    }
+
+    [Fact]
+    public async Task News_QuietTopicResult_NamesTheTopic()
+    {
+        await RunAsync(MessageUpdate(PersonalChatId, UserId, "/news DORA"));
+
+        await _notifications.Received(1).SendMessageAsync(
+            PersonalChatId, Arg.Is<string>(m => m.Contains("Nothing substantial on") && m.Contains("DORA")));
+    }
+
+    [Fact]
+    public async Task News_ResearchFailure_ApologizesAndStillClearsTheMarker()
+    {
+        _newsResearch.ResearchDailyNewsAsync(
+                Arg.Any<List<NewsRuleEntity>>(), Arg.Any<List<ReportedNewsEntity>>(),
+                Arg.Any<List<NewsCandidateEntity>>(), Arg.Any<string?>())
+            .ThrowsAsync(new InvalidOperationException("search exploded"));
+
+        var status = await RunAsync(MessageUpdate(PersonalChatId, UserId, "/news"));
+
+        Assert.Equal(HttpStatusCode.OK, status);
+        await _notifications.Received(1).SendMessageAsync(
+            PersonalChatId, Arg.Is<string>(m => m.Contains("hit a snag")));
+        // The finally must clear the marker, or /news would be dead for ten minutes
+        await _state.Received(1).ClearNewsRequestAsync();
+    }
+
+    [Fact]
+    public async Task News_FromTheSchoolChat_IsTreatedAsAnOrdinaryQuestion()
+    {
+        await RunAsync(MessageUpdate(SchoolChatId, UserId, "/news"));
+
+        await _newsResearch.DidNotReceiveWithAnyArgs().ResearchDailyNewsAsync(default!, default!, default!, default);
+        await _summarizer.Received(1).AnswerQuestionAsync(
+            "/news", Arg.Any<List<ProcessedEmailEntity>>(), Arg.Any<List<Event>>(), Arg.Any<List<ChatTurnEntity>>());
+    }
+
+    [Fact]
+    public async Task NewsPrefixedWord_IsNotTheNewsCommand()
+    {
+        await RunAsync(MessageUpdate(PersonalChatId, UserId, "/newsletter about what?"));
+
+        await _newsResearch.DidNotReceiveWithAnyArgs().ResearchDailyNewsAsync(default!, default!, default!, default);
+        await _summarizer.Received(1).AnswerPersonalQuestionAsync(
+            "/newsletter about what?",
+            Arg.Any<List<ProcessedEmailEntity>>(), Arg.Any<List<Event>>(),
+            Arg.Any<List<ProcessedEmailEntity>>(), Arg.Any<List<Event>>(),
+            Arg.Any<List<ReportedNewsEntity>>(), Arg.Any<List<ChatTurnEntity>>(),
+            Arg.Any<Func<string, System.Text.Json.Nodes.JsonNode?, Task<string>>>());
     }
 
     // ---- /evolve command ----
@@ -446,6 +842,59 @@ public class TelegramWebhookFunctionTests
 
         await _state.DidNotReceiveWithAnyArgs().SaveSnoozeAsync(default!, default!, default!, default!, default, default);
         await _notifications.Received(1).AnswerCallbackAsync("cb1", "I can't find that email anymore.");
+    }
+
+    // ---- News feedback callbacks (👍/👎 under digest stories) ----
+
+    [Fact]
+    public async Task Callback_NewsThumbsUp_SavesAMoreLikeThisRuleKeyedByTheStory()
+    {
+        _state.GetReportedNewsAsync("abc123").Returns(new ReportedNewsEntity
+        {
+            RowKey = "abc123",
+            Headline = "DORA 2026 lands",
+            Category = "thesis-evidence"
+        });
+
+        await RunAsync(CallbackUpdate("cb1", UserId, "nf:+:abc123"));
+
+        // Keyed by the story hash so a second press replaces the rule instead of stacking
+        await _state.Received(1).SaveNewsRuleAsync(
+            "fb-abc123",
+            Arg.Is<string>(i => i.StartsWith("More stories like \"DORA 2026 lands\"")
+                && i.Contains("(topic: thesis-evidence)")));
+        await _notifications.Received(1).AnswerCallbackAsync("cb1", "Noted — more like that one.");
+    }
+
+    [Fact]
+    public async Task Callback_NewsThumbsDown_SavesAFewerLikeThisRuleThatDropsTheTopic()
+    {
+        _state.GetReportedNewsAsync("abc123").Returns(new ReportedNewsEntity
+        {
+            RowKey = "abc123",
+            Headline = "Funding round frenzy"
+        });
+
+        await RunAsync(CallbackUpdate("cb1", UserId, "nf:-:abc123"));
+
+        await _state.Received(1).SaveNewsRuleAsync(
+            "fb-abc123",
+            Arg.Is<string>(i => i.StartsWith("Fewer stories like \"Funding round frenzy\"")
+                && i.Contains("drop this topic")
+                && !i.Contains("(topic:"))); // no category -> no topic tag
+        await _notifications.Received(1).AnswerCallbackAsync("cb1", "Noted — I'll steer away from that topic.");
+    }
+
+    [Fact]
+    public async Task Callback_NewsFeedback_OnAStoryThatAgedOut_ApologizesWithoutSavingARule()
+    {
+        _state.GetReportedNewsAsync("gone12").Returns((ReportedNewsEntity?)null);
+
+        await RunAsync(CallbackUpdate("cb1", UserId, "nf:+:gone12"));
+
+        await _state.DidNotReceiveWithAnyArgs().SaveNewsRuleAsync(default!, default!);
+        await _notifications.Received(1).AnswerCallbackAsync(
+            "cb1", "That story has aged out of my records — tell me in chat instead.");
     }
 
     // ---- Unsubscribe callbacks (List-Unsubscribe parsing) ----

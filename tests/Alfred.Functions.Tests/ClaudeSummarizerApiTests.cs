@@ -200,16 +200,123 @@ public class ClaudeSummarizerApiTests
         _http.EnqueueJson(TextResponse("Nothing is due."));
 
         var answer = await _service.AnswerPersonalQuestionAsync(
-            "anything due?", [], [], [], [], [],
+            "anything due?", [], [], [], [], [], [],
             (_, _) => Task.FromResult("should never be called"));
 
         Assert.Equal("Nothing is due.", answer);
-        // The tool definitions must travel with the request
-        var tools = RequestBody().GetProperty("tools");
-        var toolNames = tools.EnumerateArray().Select(t => t.GetProperty("name").GetString()).ToList();
+        // The tool definitions must travel with the request — including the server-side
+        // web-search tool for news follow-ups
+        var body = RequestBody();
+        var toolNames = body.GetProperty("tools").EnumerateArray()
+            .Select(t => t.GetProperty("name").GetString()).ToList();
         Assert.Contains("search_inbox", toolNames);
         Assert.Contains("draft_reply", toolNames);
         Assert.Contains("create_calendar_event", toolNames);
+        Assert.Contains("web_search", toolNames);
+        // Web-search turns carry narration on top of the answer — the budget must cover it
+        Assert.Equal(4096, body.GetProperty("max_tokens").GetInt32());
+    }
+
+    [Fact]
+    public async Task AnswerPersonalQuestion_RecentNewsRidesInThePrompt()
+    {
+        _http.EnqueueJson(TextResponse("It was the DORA study."));
+
+        var recentNews = new List<ReportedNewsEntity>
+        {
+            new()
+            {
+                Headline = "DORA 2026 lands", Url = "https://dora.dev/2026", Category = "thesis-evidence",
+                Summary = "Review times doubled.", WhyItMatters = "Core evidence.",
+                ReportedAt = new DateTimeOffset(2026, 8, 17, 18, 0, 0, TimeSpan.Zero)
+            }
+        };
+
+        await _service.AnswerPersonalQuestionAsync(
+            "what was that DORA story?", [], [], [], [], recentNews, [],
+            (_, _) => Task.FromResult(""));
+
+        var prompt = RequestUserText();
+        Assert.Contains("RECENT AI NEWS", prompt);
+        Assert.Contains("[thesis-evidence] DORA 2026 lands (https://dora.dev/2026): Review times doubled. | why it mattered: Core evidence.", prompt);
+    }
+
+    [Fact]
+    public async Task AnswerPersonalQuestion_NoRecentNews_SaysSoInThePrompt()
+    {
+        _http.EnqueueJson(TextResponse("ok"));
+
+        await _service.AnswerPersonalQuestionAsync("q", [], [], [], [], [], [],
+            (_, _) => Task.FromResult(""));
+
+        Assert.Contains("No AI news reported recently.", RequestUserText());
+    }
+
+    [Fact]
+    public async Task AnswerPersonalQuestion_TheAnswerIsTheLastTextBlock()
+    {
+        // With server tools in play, earlier text blocks are search narration
+        _http.EnqueueJson(JsonSerializer.Serialize(new
+        {
+            id = "msg_1",
+            type = "message",
+            role = "assistant",
+            model = "claude-test",
+            content = new object[]
+            {
+                new { type = "text", text = "Let me check that story..." },
+                new { type = "text", text = "Here's the read-out." }
+            },
+            stop_reason = "end_turn",
+            usage = new { input_tokens = 10, output_tokens = 20 }
+        }));
+
+        var answer = await _service.AnswerPersonalQuestionAsync(
+            "tell me more", [], [], [], [], [], [],
+            (_, _) => Task.FromResult(""));
+
+        Assert.Equal("Here's the read-out.", answer);
+    }
+
+    [Fact]
+    public async Task AnswerPersonalQuestion_PauseTurn_ResumesWithTheFullPartialTurn()
+    {
+        // A server web-search turn pausing mid-run, exactly as the API sends it
+        _http.EnqueueJson("""
+            {
+              "id": "msg_1",
+              "type": "message",
+              "role": "assistant",
+              "model": "claude-test",
+              "content": [
+                {"type": "server_tool_use", "id": "srvtoolu_01", "name": "web_search", "input": {"query": "dora study"}},
+                {"type": "web_search_tool_result", "tool_use_id": "srvtoolu_01", "content": [
+                  {"type": "web_search_result", "url": "https://example.com", "title": "Example", "encrypted_content": "ENC123", "page_age": "1 day ago"}
+                ]},
+                {"type": "text", "text": "Searching..."}
+              ],
+              "stop_reason": "pause_turn",
+              "usage": {"input_tokens": 10, "output_tokens": 20}
+            }
+            """);
+        _http.EnqueueJson(TextResponse("Here's what I found."));
+
+        var answer = await _service.AnswerPersonalQuestionAsync(
+            "look up the DORA study", [], [], [], [], [], [],
+            (_, _) => Task.FromResult("client tools must not run for a paused search"));
+
+        Assert.Equal("Here's what I found.", answer);
+        Assert.Equal(2, _http.Requests.Count);
+
+        // The resume must append the FULL paused turn — server_tool_use and
+        // web_search_tool_result blocks included — so the server resumes rather
+        // than restarting the search
+        var resumeMessages = JsonDocument.Parse(_http.Requests[1].Body!).RootElement.GetProperty("messages");
+        Assert.Equal(2, resumeMessages.GetArrayLength());
+        Assert.Equal("assistant", resumeMessages[1].GetProperty("role").GetString());
+        var resumedTurn = resumeMessages[1].ToString();
+        Assert.Contains("server_tool_use", resumedTurn, StringComparison.Ordinal);
+        Assert.Contains("ENC123", resumedTurn, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -220,7 +327,7 @@ public class ClaudeSummarizerApiTests
 
         var executed = new List<(string Tool, JsonNode? Input)>();
         var answer = await _service.AnswerPersonalQuestionAsync(
-            "what have I snoozed?", [], [], [], [], [],
+            "what have I snoozed?", [], [], [], [], [], [],
             (tool, input) =>
             {
                 executed.Add((tool, input));
@@ -245,7 +352,7 @@ public class ClaudeSummarizerApiTests
         _http.EnqueueJson(TextResponse("That didn't work, sorry."));
 
         var answer = await _service.AnswerPersonalQuestionAsync(
-            "mark it unread", [], [], [], [], [],
+            "mark it unread", [], [], [], [], [], [],
             (_, _) => throw new InvalidOperationException("gmail exploded"));
 
         Assert.Equal("That didn't work, sorry.", answer);
@@ -253,13 +360,13 @@ public class ClaudeSummarizerApiTests
     }
 
     [Fact]
-    public async Task AnswerPersonalQuestion_RunawayToolLoop_BailsOutAfterEightRounds()
+    public async Task AnswerPersonalQuestion_RunawayToolLoop_BailsOutAfterTenRounds()
     {
         _http.Route("POST /v1/messages", ToolUseResponse("list_snoozes", new { }));
 
         var calls = 0;
         var answer = await _service.AnswerPersonalQuestionAsync(
-            "loop forever", [], [], [], [], [],
+            "loop forever", [], [], [], [], [], [],
             (_, _) =>
             {
                 calls++;
@@ -267,8 +374,9 @@ public class ClaudeSummarizerApiTests
             });
 
         Assert.Equal("I tried to help but got stuck in a loop of actions — please check Gmail directly.", answer);
-        Assert.Equal(8, _http.Requests.Count);
-        Assert.Equal(8, calls);
+        // Room for a search -> refine -> read -> act -> answer chain: ten rounds
+        Assert.Equal(10, _http.Requests.Count);
+        Assert.Equal(10, calls);
     }
 
     [Fact]
@@ -285,7 +393,7 @@ public class ClaudeSummarizerApiTests
             new() { Id = "ev42", Summary = "Deadline: Pay GO invoice", Start = new EventDateTime { Date = "2026-08-25" } }
         };
 
-        await _service.AnswerPersonalQuestionAsync("q", [], [], personalEmails, actions, [],
+        await _service.AnswerPersonalQuestionAsync("q", [], [], personalEmails, actions, [], [],
             (_, _) => Task.FromResult(""));
 
         var prompt = RequestUserText();

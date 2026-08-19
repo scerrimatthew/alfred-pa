@@ -13,4 +13,8 @@ public class AiNewsItem
     public string Headline { get; set; } = string.Empty;
     public string Url { get; set; } = string.Empty;
     public string? Category { get; set; }
+    // Stored alongside the headline so chat follow-ups and the weekly synthesis can
+    // work from what was actually reported, not just a title
+    public string? Summary { get; set; }
+    public string? WhyItMatters { get; set; }
 }

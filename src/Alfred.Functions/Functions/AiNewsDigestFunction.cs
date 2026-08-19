@@ -1,4 +1,5 @@
 using Alfred.Functions.Configuration;
+using Alfred.Functions.Models;
 using Alfred.Functions.Services.AI;
 using Alfred.Functions.Services.Notifications;
 using Alfred.Functions.Services.State;
@@ -11,7 +12,11 @@ namespace Alfred.Functions.Functions;
 public class AiNewsDigestFunction
 {
     // How far back the already-covered list reaches when deduplicating stories
-    private const int CoveredLookbackDays = 14;
+    internal const int CoveredLookbackDays = 14;
+
+    // How far back newsletter-mined candidate stories are pulled into the run —
+    // a little over a day so nothing slips between two evening digests
+    internal const int CandidateLookbackHours = 26;
 
     private readonly INewsResearchService _newsResearch;
     private readonly INotificationService _notificationService;
@@ -49,8 +54,10 @@ public class AiNewsDigestFunction
             var rules = await _stateService.GetNewsRulesAsync();
             var recentlyReported = await _stateService.GetReportedNewsSinceAsync(
                 DateTimeOffset.UtcNow.AddDays(-CoveredLookbackDays));
+            var candidates = await _stateService.GetNewsCandidatesSinceAsync(
+                DateTimeOffset.UtcNow.AddHours(-CandidateLookbackHours));
 
-            var digest = await _newsResearch.ResearchDailyNewsAsync(rules, recentlyReported);
+            var digest = await _newsResearch.ResearchDailyNewsAsync(rules, recentlyReported, candidates);
 
             if (digest.Items.Count == 0 || string.IsNullOrWhiteSpace(digest.TelegramMessage))
             {
@@ -58,7 +65,7 @@ public class AiNewsDigestFunction
                 return;
             }
 
-            await _notificationService.SendPersonalAlertAsync(digest.TelegramMessage);
+            await _notificationService.SendPersonalAlertAsync(digest.TelegramMessage, BuildFeedbackButtons(digest.Items));
 
             await _stateService.SaveReportedNewsAsync(digest.Items);
 
@@ -69,5 +76,32 @@ public class AiNewsDigestFunction
             _logger.LogError(ex, "AI news digest failed");
             await _notificationService.SendPersonalErrorAsync($"AI news digest failed: {ex.Message}");
         }
+    }
+
+    // One 👍/👎 pair per story (the notification service lays buttons out two per row, so
+    // each pair forms one row). Callback data carries the story's URL hash — the same key
+    // the ReportedNews table uses — well inside Telegram's 64-byte limit.
+    internal static List<NotificationButton> BuildFeedbackButtons(List<AiNewsItem> items)
+    {
+        var buttons = new List<NotificationButton>();
+        foreach (var item in items)
+        {
+            var key = TableStorageStateService.HashUrl(item.Url);
+            var label = ShortLabel(item.Headline);
+            buttons.Add(new NotificationButton($"👍 {label}", $"nf:+:{key}"));
+            buttons.Add(new NotificationButton($"👎 {label}", $"nf:-:{key}"));
+        }
+        return buttons;
+    }
+
+    internal static string ShortLabel(string headline)
+    {
+        if (headline.Length <= 22)
+            return headline;
+
+        // Don't cut through a surrogate pair (emoji etc.) — a lone surrogate in a button
+        // label makes Telegram reject the whole message
+        var cut = char.IsHighSurrogate(headline[20]) ? 20 : 21;
+        return headline[..cut].TrimEnd() + "…";
     }
 }

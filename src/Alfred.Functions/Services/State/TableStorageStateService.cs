@@ -17,6 +17,9 @@ public class TableStorageStateService : IStateService
     private const string ChatHistoryTable = "ChatHistory";
     private const string NewsRulesTable = "NewsRules";
     private const string ReportedNewsTable = "ReportedNews";
+    private const string NewsCandidatesTable = "NewsCandidates";
+    private const string NewsRequestsTable = "NewsRequests";
+    private const string ProcessedUpdatesTable = "ProcessedUpdates";
     private const string SchoolPartition = "emails";
     private const string PersonalPartition = "personal";
     private const string RulesPartition = "rules";
@@ -545,6 +548,21 @@ public class TableStorageStateService : IStateService
         return results;
     }
 
+    public async Task<ReportedNewsEntity?> GetReportedNewsAsync(string rowKey)
+    {
+        var tableClient = _tableServiceClient.GetTableClient(ReportedNewsTable);
+        await tableClient.CreateIfNotExistsAsync();
+
+        try
+        {
+            return (await tableClient.GetEntityAsync<ReportedNewsEntity>(NewsPartition, rowKey)).Value;
+        }
+        catch (RequestFailedException ex) when (ex.Status == 404)
+        {
+            return null;
+        }
+    }
+
     public async Task SaveReportedNewsAsync(List<AiNewsItem> items)
     {
         var tableClient = _tableServiceClient.GetTableClient(ReportedNewsTable);
@@ -561,6 +579,8 @@ public class TableStorageStateService : IStateService
                 Headline = item.Headline,
                 Url = item.Url,
                 Category = item.Category,
+                Summary = item.Summary,
+                WhyItMatters = item.WhyItMatters,
                 ReportedAt = now
             };
             await tableClient.UpsertEntityAsync(entity);
@@ -580,6 +600,121 @@ public class TableStorageStateService : IStateService
     {
         var bytes = System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(url));
         return Convert.ToHexString(bytes)[..16].ToLowerInvariant();
+    }
+
+    public async Task SaveNewsCandidatesAsync(List<NewsCandidateEntity> candidates)
+    {
+        var tableClient = _tableServiceClient.GetTableClient(NewsCandidatesTable);
+        await tableClient.CreateIfNotExistsAsync();
+
+        var now = DateTimeOffset.UtcNow;
+        foreach (var candidate in candidates)
+        {
+            candidate.PartitionKey = NewsPartition;
+            // Keyed by URL (or headline when the newsletter gave no link) so the same story
+            // mentioned by two newsletters lands once
+            candidate.RowKey = HashUrl(!string.IsNullOrWhiteSpace(candidate.Url)
+                ? candidate.Url
+                : candidate.Headline);
+            candidate.SeenAt = now;
+            await tableClient.UpsertEntityAsync(candidate);
+        }
+
+        // Candidates only matter until the next digest or two — prune anything older than a week
+        var cutoff = now.AddDays(-7);
+        var stale = tableClient.QueryAsync<NewsCandidateEntity>(
+            e => e.PartitionKey == NewsPartition && e.SeenAt < cutoff);
+        await foreach (var old in stale)
+        {
+            await tableClient.DeleteEntityAsync(old.PartitionKey, old.RowKey);
+        }
+    }
+
+    public async Task<List<NewsCandidateEntity>> GetNewsCandidatesSinceAsync(DateTimeOffset since)
+    {
+        var tableClient = _tableServiceClient.GetTableClient(NewsCandidatesTable);
+        await tableClient.CreateIfNotExistsAsync();
+
+        var results = new List<NewsCandidateEntity>();
+        var query = tableClient.QueryAsync<NewsCandidateEntity>(
+            e => e.PartitionKey == NewsPartition && e.SeenAt >= since);
+
+        await foreach (var entity in query)
+        {
+            results.Add(entity);
+        }
+
+        return results;
+    }
+
+    public async Task<NewsRequestStateEntity?> GetNewsRequestAsync()
+    {
+        var tableClient = _tableServiceClient.GetTableClient(NewsRequestsTable);
+        await tableClient.CreateIfNotExistsAsync();
+
+        try
+        {
+            return (await tableClient.GetEntityAsync<NewsRequestStateEntity>(PersonalPartition, "news-request")).Value;
+        }
+        catch (RequestFailedException ex) when (ex.Status == 404)
+        {
+            return null;
+        }
+    }
+
+    public async Task SaveNewsRequestAsync(NewsRequestStateEntity entity)
+    {
+        var tableClient = _tableServiceClient.GetTableClient(NewsRequestsTable);
+        await tableClient.CreateIfNotExistsAsync();
+        await tableClient.UpsertEntityAsync(entity);
+    }
+
+    public async Task ClearNewsRequestAsync()
+    {
+        var tableClient = _tableServiceClient.GetTableClient(NewsRequestsTable);
+        await tableClient.CreateIfNotExistsAsync();
+
+        try
+        {
+            await tableClient.DeleteEntityAsync(PersonalPartition, "news-request");
+        }
+        catch (RequestFailedException ex) when (ex.Status == 404)
+        {
+            // Already gone, ignore
+        }
+    }
+
+    public async Task<bool> TryClaimUpdateAsync(long updateId)
+    {
+        var tableClient = _tableServiceClient.GetTableClient(ProcessedUpdatesTable);
+        await tableClient.CreateIfNotExistsAsync();
+
+        var now = DateTimeOffset.UtcNow;
+        try
+        {
+            // Add (not upsert) — a 409 means this update was already claimed by an
+            // earlier delivery, so the caller must drop it
+            await tableClient.AddEntityAsync(new ProcessedUpdateEntity
+            {
+                RowKey = updateId.ToString(),
+                ClaimedAt = now
+            });
+        }
+        catch (RequestFailedException ex) when (ex.Status == 409)
+        {
+            return false;
+        }
+
+        // Telegram gives up on redelivery within hours — day-old claims are dead weight
+        var cutoff = now.AddDays(-1);
+        var stale = tableClient.QueryAsync<ProcessedUpdateEntity>(
+            e => e.PartitionKey == PersonalPartition && e.ClaimedAt < cutoff);
+        await foreach (var old in stale)
+        {
+            await tableClient.DeleteEntityAsync(old.PartitionKey, old.RowKey);
+        }
+
+        return true;
     }
 
     public async Task SaveChatTurnAsync(long chatId, string question, string answer)

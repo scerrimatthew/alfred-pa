@@ -248,6 +248,64 @@ public class ClaudeSummarizerParsingTests
         Assert.Equal("s", triage.Summary);
     }
 
+    // ---- Newsletter-mined news leads ----
+
+    [Fact]
+    public void Triage_NewsLeads_AreParsedWithUrlAndNote()
+    {
+        var triage = ParseTriage("""
+            {"requiresAttention": false, "category": "notification", "summary": "s",
+             "newsLeads": [
+                {"headline": "DORA 2026 lands", "url": "https://dora.dev/2026", "note": "Review times doubled"},
+                {"headline": "Bare lead"}
+             ]}
+            """);
+
+        Assert.Equal(2, triage.NewsLeads.Count);
+        Assert.Equal("DORA 2026 lands", triage.NewsLeads[0].Headline);
+        Assert.Equal("https://dora.dev/2026", triage.NewsLeads[0].Url);
+        Assert.Equal("Review times doubled", triage.NewsLeads[0].Note);
+        Assert.Equal("Bare lead", triage.NewsLeads[1].Headline);
+        Assert.Null(triage.NewsLeads[1].Url);
+        Assert.Null(triage.NewsLeads[1].Note);
+    }
+
+    [Fact]
+    public void Triage_NewsLeadsWithoutAHeadline_AreSkipped()
+    {
+        var triage = ParseTriage("""
+            {"summary": "s", "newsLeads": [
+                {"url": "https://no-headline.example"},
+                {"headline": "   ", "url": "https://blank.example"},
+                {"headline": null},
+                {"headline": "Keeper"}
+            ]}
+            """);
+
+        Assert.Equal("Keeper", Assert.Single(triage.NewsLeads).Headline);
+    }
+
+    [Theory]
+    [InlineData("""{"summary": "s"}""")]                       // field missing entirely
+    [InlineData("""{"summary": "s", "newsLeads": null}""")]    // null
+    [InlineData("""{"summary": "s", "newsLeads": "none"}""")]  // not an array
+    public void Triage_MissingOrMalformedNewsLeads_MeanNoLeads(string json)
+    {
+        Assert.Empty(ParseTriage(json).NewsLeads);
+    }
+
+    [Fact]
+    public void Triage_NullLeadUrlAndNote_StayNull()
+    {
+        var triage = ParseTriage("""
+            {"summary": "s", "newsLeads": [{"headline": "H", "url": null, "note": null}]}
+            """);
+
+        var lead = Assert.Single(triage.NewsLeads);
+        Assert.Null(lead.Url);
+        Assert.Null(lead.Note);
+    }
+
     // ---- Conversation history block ----
 
     [Fact]

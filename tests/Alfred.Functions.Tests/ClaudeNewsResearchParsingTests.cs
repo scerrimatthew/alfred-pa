@@ -26,7 +26,40 @@ public class ClaudeNewsResearchParsingTests
         Assert.Equal("DORA 2026 shows review times up", digest.Items[0].Headline);
         Assert.Equal("https://dora.dev/2026", digest.Items[0].Url);
         Assert.Equal("thesis-evidence", digest.Items[0].Category);
+        Assert.Equal("s", digest.Items[0].Summary);
+        Assert.Equal("w", digest.Items[0].WhyItMatters);
         Assert.Equal("competitor", digest.Items[1].Category);
+    }
+
+    [Fact]
+    public void SummaryAndWhyItMatters_AreCapturedPerItem()
+    {
+        var digest = ClaudeNewsResearchService.ParseNewsResponse("""
+            {"items": [{"headline": "H", "url": "https://u",
+             "summary": "Review times doubled in the study.",
+             "whyItMatters": "Direct thesis evidence."}], "telegramMessage": "m"}
+            """);
+
+        var item = Assert.Single(digest.Items);
+        Assert.Equal("Review times doubled in the study.", item.Summary);
+        Assert.Equal("Direct thesis evidence.", item.WhyItMatters);
+    }
+
+    [Fact]
+    public void MissingOrNullSummaryAndWhy_AreToleratedAsNull()
+    {
+        var digest = ClaudeNewsResearchService.ParseNewsResponse("""
+            {"items": [
+                {"headline": "A", "url": "https://a"},
+                {"headline": "B", "url": "https://b", "summary": null, "whyItMatters": null}
+            ], "telegramMessage": "m"}
+            """);
+
+        Assert.All(digest.Items, item =>
+        {
+            Assert.Null(item.Summary);
+            Assert.Null(item.WhyItMatters);
+        });
     }
 
     [Fact]

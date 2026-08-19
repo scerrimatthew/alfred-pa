@@ -27,6 +27,9 @@ public class TableStorageStateServiceTests
     private readonly List<BackfillStateEntity> _backfillState = [];
     private readonly List<NewsRuleEntity> _newsRules = [];
     private readonly List<ReportedNewsEntity> _reportedNews = [];
+    private readonly List<NewsCandidateEntity> _newsCandidates = [];
+    private readonly List<NewsRequestStateEntity> _newsRequests = [];
+    private readonly List<ProcessedUpdateEntity> _processedUpdates = [];
 
     public TableStorageStateServiceTests()
     {
@@ -42,6 +45,9 @@ public class TableStorageStateServiceTests
         var backfillStateClient = CreateTableClient(_backfillState);
         var newsRulesClient = CreateTableClient(_newsRules);
         var reportedNewsClient = CreateTableClient(_reportedNews);
+        var newsCandidatesClient = CreateTableClient(_newsCandidates);
+        var newsRequestsClient = CreateTableClient(_newsRequests);
+        var processedUpdatesClient = CreateTableClient(_processedUpdates);
 
         var serviceClient = Substitute.For<TableServiceClient>();
         serviceClient.GetTableClient("ProcessedEmails").Returns(processedEmailsClient);
@@ -54,6 +60,9 @@ public class TableStorageStateServiceTests
         serviceClient.GetTableClient("BackfillState").Returns(backfillStateClient);
         serviceClient.GetTableClient("NewsRules").Returns(newsRulesClient);
         serviceClient.GetTableClient("ReportedNews").Returns(reportedNewsClient);
+        serviceClient.GetTableClient("NewsCandidates").Returns(newsCandidatesClient);
+        serviceClient.GetTableClient("NewsRequests").Returns(newsRequestsClient);
+        serviceClient.GetTableClient("ProcessedUpdates").Returns(processedUpdatesClient);
 
         _service = new TableStorageStateService(serviceClient, NullLogger<TableStorageStateService>.Instance);
     }
@@ -79,6 +88,17 @@ public class TableStorageStateServiceTests
                 return found is not null
                     ? Response.FromValue(found, Substitute.For<Response>())
                     : throw new RequestFailedException(404, "Not Found");
+            });
+
+        client.AddEntityAsync(Arg.Any<T>(), Arg.Any<CancellationToken>())
+            .Returns(ci =>
+            {
+                var entity = ci.Arg<T>();
+                // Add-if-absent, like the real table: an existing row means 409 Conflict
+                if (store.Any(e => e.PartitionKey == entity.PartitionKey && e.RowKey == entity.RowKey))
+                    throw new RequestFailedException(409, "Conflict");
+                store.Add(entity);
+                return Substitute.For<Response>();
             });
 
         client.UpsertEntityAsync(Arg.Any<T>(), Arg.Any<TableUpdateMode>(), Arg.Any<CancellationToken>())
@@ -557,6 +577,32 @@ public class TableStorageStateServiceTests
     }
 
     [Fact]
+    public async Task SaveReportedNews_PersistsTheSummaryAndWhyItMatters()
+    {
+        await _service.SaveReportedNewsAsync(
+        [
+            new AiNewsItem
+            {
+                Headline = "DORA lands", Url = "https://d.example", Category = "thesis-evidence",
+                Summary = "Review times doubled.", WhyItMatters = "Core evidence for the bet."
+            }
+        ]);
+
+        var entity = Assert.Single(_reportedNews);
+        Assert.Equal("Review times doubled.", entity.Summary);
+        Assert.Equal("Core evidence for the bet.", entity.WhyItMatters);
+    }
+
+    [Fact]
+    public async Task GetReportedNews_ReturnsTheRowOrNull()
+    {
+        _reportedNews.Add(new ReportedNewsEntity { PartitionKey = "news", RowKey = "abc123", Headline = "DORA lands" });
+
+        Assert.Equal("DORA lands", (await _service.GetReportedNewsAsync("abc123"))?.Headline);
+        Assert.Null(await _service.GetReportedNewsAsync("ghost"));
+    }
+
+    [Fact]
     public void HashUrl_IsDeterministicSixteenCharLowercaseHex()
     {
         var hash = TableStorageStateService.HashUrl("https://example.com/story");
@@ -565,6 +611,167 @@ public class TableStorageStateServiceTests
         Assert.Matches("^[0-9a-f]{16}$", hash);
         Assert.Equal(hash, TableStorageStateService.HashUrl("https://example.com/story"));
         Assert.NotEqual(hash, TableStorageStateService.HashUrl("https://example.com/other"));
+    }
+
+    // ---- News candidates (newsletter-mined leads) ----
+
+    [Fact]
+    public async Task SaveNewsCandidates_KeysByUrlHash_OrHeadlineHashWhenThereIsNoUrl()
+    {
+        await _service.SaveNewsCandidatesAsync(
+        [
+            new NewsCandidateEntity { Headline = "With url", Url = "https://a.example/1", Note = "n", Source = "TLDR AI" },
+            new NewsCandidateEntity { Headline = "No url at all", Url = null, Source = "Import AI" },
+            new NewsCandidateEntity { Headline = "Blank url", Url = "   ", Source = "Import AI" }
+        ]);
+
+        Assert.Equal(3, _newsCandidates.Count);
+        Assert.All(_newsCandidates, c => Assert.Equal("news", c.PartitionKey));
+        Assert.All(_newsCandidates, c =>
+            Assert.True((DateTimeOffset.UtcNow - c.SeenAt).Duration() < TimeSpan.FromMinutes(1),
+                "SeenAt must be stamped at save time"));
+
+        Assert.Equal(TableStorageStateService.HashUrl("https://a.example/1"),
+            _newsCandidates.Single(c => c.Headline == "With url").RowKey);
+        Assert.Equal(TableStorageStateService.HashUrl("No url at all"),
+            _newsCandidates.Single(c => c.Headline == "No url at all").RowKey);
+        Assert.Equal(TableStorageStateService.HashUrl("Blank url"),
+            _newsCandidates.Single(c => c.Headline == "Blank url").RowKey);
+    }
+
+    [Fact]
+    public async Task SaveNewsCandidates_SameStoryFromTwoNewsletters_LandsOnce()
+    {
+        await _service.SaveNewsCandidatesAsync(
+            [new NewsCandidateEntity { Headline = "First wording", Url = "https://a.example/1", Source = "TLDR AI" }]);
+        await _service.SaveNewsCandidatesAsync(
+            [new NewsCandidateEntity { Headline = "Second wording", Url = "https://a.example/1", Source = "Import AI" }]);
+
+        var candidate = Assert.Single(_newsCandidates);
+        Assert.Equal("Second wording", candidate.Headline);
+        Assert.Equal("Import AI", candidate.Source);
+    }
+
+    [Fact]
+    public async Task SaveNewsCandidates_PrunesLeadsOlderThanAWeek()
+    {
+        _newsCandidates.Add(new NewsCandidateEntity { PartitionKey = "news", RowKey = "stale", SeenAt = DateTimeOffset.UtcNow.AddDays(-10) });
+        _newsCandidates.Add(new NewsCandidateEntity { PartitionKey = "news", RowKey = "fresh", SeenAt = DateTimeOffset.UtcNow.AddDays(-2) });
+
+        await _service.SaveNewsCandidatesAsync([new NewsCandidateEntity { Headline = "New lead" }]);
+
+        Assert.DoesNotContain(_newsCandidates, c => c.RowKey == "stale");
+        Assert.Contains(_newsCandidates, c => c.RowKey == "fresh");
+        Assert.Equal(2, _newsCandidates.Count); // fresh + the new lead
+    }
+
+    [Fact]
+    public async Task GetNewsCandidatesSince_AppliesPartitionAndDateWindow()
+    {
+        var now = DateTimeOffset.UtcNow;
+        _newsCandidates.Add(new NewsCandidateEntity { PartitionKey = "news", RowKey = "recent", SeenAt = now.AddHours(-2) });
+        _newsCandidates.Add(new NewsCandidateEntity { PartitionKey = "news", RowKey = "old", SeenAt = now.AddDays(-3) });
+        _newsCandidates.Add(new NewsCandidateEntity { PartitionKey = "other", RowKey = "wrong-partition", SeenAt = now.AddHours(-2) });
+
+        var results = await _service.GetNewsCandidatesSinceAsync(now.AddHours(-26));
+
+        Assert.Equal("recent", Assert.Single(results).RowKey);
+    }
+
+    // ---- /news in-flight marker ----
+
+    [Fact]
+    public async Task NewsRequest_SaveGetClearRoundTrip()
+    {
+        Assert.Null(await _service.GetNewsRequestAsync());
+
+        var requestedAt = DateTimeOffset.UtcNow;
+        await _service.SaveNewsRequestAsync(new NewsRequestStateEntity { RequestedAt = requestedAt, Topic = "EU AI Act" });
+
+        var loaded = await _service.GetNewsRequestAsync();
+        Assert.NotNull(loaded);
+        Assert.Equal(requestedAt, loaded.RequestedAt);
+        Assert.Equal("EU AI Act", loaded.Topic);
+
+        await _service.ClearNewsRequestAsync();
+        Assert.Null(await _service.GetNewsRequestAsync());
+    }
+
+    [Fact]
+    public async Task ClearNewsRequest_WithoutAMarker_IsANoOp()
+    {
+        await _service.ClearNewsRequestAsync();
+
+        Assert.Empty(_newsRequests);
+    }
+
+    [Fact]
+    public async Task SaveNewsRequest_ReplacesTheSingleMarkerRow()
+    {
+        await _service.SaveNewsRequestAsync(new NewsRequestStateEntity { RequestedAt = DateTimeOffset.UtcNow.AddMinutes(-20), Topic = "old" });
+        await _service.SaveNewsRequestAsync(new NewsRequestStateEntity { RequestedAt = DateTimeOffset.UtcNow, Topic = null });
+
+        var marker = Assert.Single(_newsRequests);
+        Assert.Null(marker.Topic);
+    }
+
+    // ---- Telegram update dedup claims ----
+
+    [Fact]
+    public async Task TryClaimUpdate_FirstClaim_SucceedsAndStampsTheClaim()
+    {
+        var claimed = await _service.TryClaimUpdateAsync(123456789);
+
+        Assert.True(claimed);
+        var claim = Assert.Single(_processedUpdates);
+        Assert.Equal("personal", claim.PartitionKey);
+        Assert.Equal("123456789", claim.RowKey);
+        Assert.True((DateTimeOffset.UtcNow - claim.ClaimedAt).Duration() < TimeSpan.FromMinutes(1));
+    }
+
+    [Fact]
+    public async Task TryClaimUpdate_DuplicateDelivery_IsRefused()
+    {
+        Assert.True(await _service.TryClaimUpdateAsync(42));
+        Assert.False(await _service.TryClaimUpdateAsync(42));
+
+        // The original claim survives untouched
+        Assert.Single(_processedUpdates);
+    }
+
+    [Fact]
+    public async Task TryClaimUpdate_DifferentUpdates_ClaimIndependently()
+    {
+        Assert.True(await _service.TryClaimUpdateAsync(1));
+        Assert.True(await _service.TryClaimUpdateAsync(2));
+
+        Assert.Equal(2, _processedUpdates.Count);
+    }
+
+    [Fact]
+    public async Task TryClaimUpdate_SuccessfulClaim_PrunesDayOldClaims()
+    {
+        _processedUpdates.Add(new ProcessedUpdateEntity { PartitionKey = "personal", RowKey = "stale", ClaimedAt = DateTimeOffset.UtcNow.AddDays(-2) });
+        _processedUpdates.Add(new ProcessedUpdateEntity { PartitionKey = "personal", RowKey = "fresh", ClaimedAt = DateTimeOffset.UtcNow.AddHours(-2) });
+
+        Assert.True(await _service.TryClaimUpdateAsync(99));
+
+        Assert.DoesNotContain(_processedUpdates, c => c.RowKey == "stale");
+        Assert.Contains(_processedUpdates, c => c.RowKey == "fresh");
+        Assert.Equal(2, _processedUpdates.Count); // fresh + the new claim
+    }
+
+    [Fact]
+    public async Task TryClaimUpdate_RefusedClaim_DoesNotPrune()
+    {
+        // A duplicate delivery is the hot path — it must return fast, without a table sweep
+        _processedUpdates.Add(new ProcessedUpdateEntity { PartitionKey = "personal", RowKey = "stale", ClaimedAt = DateTimeOffset.UtcNow.AddDays(-2) });
+        _processedUpdates.Add(new ProcessedUpdateEntity { PartitionKey = "personal", RowKey = "42", ClaimedAt = DateTimeOffset.UtcNow.AddMinutes(-1) });
+
+        Assert.False(await _service.TryClaimUpdateAsync(42));
+
+        Assert.Contains(_processedUpdates, c => c.RowKey == "stale"); // untouched
+        Assert.Equal(2, _processedUpdates.Count);
     }
 
     // ---- Backfill marker ----

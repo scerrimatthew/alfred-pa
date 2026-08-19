@@ -28,6 +28,8 @@ public class AlfredOptionsTests
         Assert.Equal(string.Empty, options.AllowedTelegramUserIds);
         Assert.True(options.AiNewsEnabled);
         Assert.Equal(5, options.AiNewsMaxItems);
+        Assert.True(options.AiNewsFlashEnabled);
+        Assert.True(options.AiNewsWeeklyEnabled);
     }
 
     [Theory]

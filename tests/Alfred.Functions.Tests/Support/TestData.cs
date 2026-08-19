@@ -73,7 +73,8 @@ internal static class TestData
         string? matchedRule = null,
         string? fraudWarning = null,
         bool needsReply = false,
-        List<CalendarEventInfo>? calendarEvents = null)
+        List<CalendarEventInfo>? calendarEvents = null,
+        List<NewsLead>? newsLeads = null)
     {
         return new PersonalEmailTriage
         {
@@ -85,7 +86,8 @@ internal static class TestData
             MatchedRule = matchedRule,
             FraudWarning = fraudWarning,
             NeedsReply = needsReply,
-            CalendarEvents = calendarEvents ?? []
+            CalendarEvents = calendarEvents ?? [],
+            NewsLeads = newsLeads ?? []
         };
     }
 

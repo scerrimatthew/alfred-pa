@@ -14,4 +14,15 @@ public class PersonalEmailTriage
     public string? FraudWarning { get; set; }
     // True when a real person wrote to Matthew and expects a response from him
     public bool NeedsReply { get; set; }
+    // Story leads extracted when the email is an AI-industry newsletter; empty otherwise
+    public List<NewsLead> NewsLeads { get; set; } = [];
+}
+
+// One story mentioned in an AI newsletter, harvested during triage as candidate
+// material for the evening AI-news digest
+public class NewsLead
+{
+    public string Headline { get; set; } = string.Empty;
+    public string? Url { get; set; }
+    public string? Note { get; set; }
 }
