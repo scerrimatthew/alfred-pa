@@ -65,6 +65,7 @@ public class TelegramWebhookFunctionTests
                 Arg.Any<List<NewsRuleEntity>>(), Arg.Any<List<ReportedNewsEntity>>(),
                 Arg.Any<List<NewsCandidateEntity>>(), Arg.Any<string?>())
             .Returns(new AiNewsDigest());
+        _summarizer.TellJokeAsync(Arg.Any<string>(), Arg.Any<List<string>>()).Returns("a joke");
     }
 
     private TelegramWebhookFunction CreateFunction(Action<AlfredOptions>? mutate = null) =>
@@ -693,6 +694,108 @@ public class TelegramWebhookFunctionTests
             Arg.Any<List<ProcessedEmailEntity>>(), Arg.Any<List<Event>>(),
             Arg.Any<List<ReportedNewsEntity>>(), Arg.Any<List<ChatTurnEntity>>(),
             Arg.Any<Func<string, System.Text.Json.Nodes.JsonNode?, Task<string>>>());
+    }
+
+    // ---- /joke command ----
+
+    [Fact]
+    public async Task Joke_InTheSchoolChat_TellsAJokeAndSavesADeformattedTurn()
+    {
+        // Unlike the other commands, /joke works in both chats — the school chat included
+        _summarizer.TellJokeAsync("", Arg.Any<List<string>>())
+            .Returns("Why did the fish blush? It saw the <b>sea weed</b>.");
+
+        await RunAsync(MessageUpdate(SchoolChatId, UserId, "/joke"));
+
+        await _notifications.Received(1).SendMessageAsync(
+            SchoolChatId, "Why did the fish blush? It saw the <b>sea weed</b>.");
+        // Saved into history (HTML stripped) so the next /joke knows not to repeat it
+        await _state.Received(1).SaveChatTurnAsync(
+            SchoolChatId, "/joke", "Why did the fish blush? It saw the sea weed.");
+        // A command, not a question — the Q&A path must stay untouched
+        await _summarizer.DidNotReceiveWithAnyArgs().AnswerQuestionAsync(default!, default!, default!, default!);
+    }
+
+    [Fact]
+    public async Task Joke_InThePersonalChat_AlsoWorks_WithoutThePersonalQAPath()
+    {
+        await RunAsync(MessageUpdate(PersonalChatId, UserId, "/joke"));
+
+        await _summarizer.Received(1).TellJokeAsync("", Arg.Any<List<string>>());
+        await _notifications.Received(1).SendMessageAsync(PersonalChatId, "a joke");
+        await _summarizer.DidNotReceiveWithAnyArgs().AnswerPersonalQuestionAsync(
+            default!, default!, default!, default!, default!, default!, default!, default!);
+    }
+
+    [Fact]
+    public async Task Joke_WithTopic_PassesTheTopicAndRecordsItInTheSavedQuestion()
+    {
+        await RunAsync(MessageUpdate(SchoolChatId, UserId, "/joke penguins in hats"));
+
+        await _summarizer.Received(1).TellJokeAsync("penguins in hats", Arg.Any<List<string>>());
+        await _state.Received(1).SaveChatTurnAsync(SchoolChatId, "/joke penguins in hats", "a joke");
+    }
+
+    [Theory]
+    [InlineData("/joke@alfred_bot", "")]                // group-chat command-menu form
+    [InlineData("/joke@alfred_bot penguins", "penguins")]
+    [InlineData("/JOKE", "")]                           // case-insensitive
+    [InlineData("  /joke  ", "")]                       // surrounding whitespace trimmed
+    public async Task Joke_MentionCaseAndWhitespaceVariants_AllParse(string text, string expectedTopic)
+    {
+        await RunAsync(MessageUpdate(SchoolChatId, UserId, text));
+
+        await _summarizer.Received(1).TellJokeAsync(expectedTopic, Arg.Any<List<string>>());
+        await _summarizer.DidNotReceiveWithAnyArgs().AnswerQuestionAsync(default!, default!, default!, default!);
+    }
+
+    [Fact]
+    public async Task JokePrefixedWord_IsNotTheJokeCommand()
+    {
+        await RunAsync(MessageUpdate(SchoolChatId, UserId, "/jokes"));
+
+        await _summarizer.DidNotReceiveWithAnyArgs().TellJokeAsync(default!, default!);
+        await _summarizer.Received(1).AnswerQuestionAsync(
+            "/jokes", Arg.Any<List<ProcessedEmailEntity>>(), Arg.Any<List<Event>>(), Arg.Any<List<ChatTurnEntity>>());
+    }
+
+    [Fact]
+    public async Task Joke_FeedsBackOnlyEarlierJokeAnswers_AsTheDoNotRepeatList()
+    {
+        _state.GetRecentChatTurnsAsync(SchoolChatId, Arg.Any<DateTimeOffset>(), Arg.Any<int>())
+            .Returns(new List<ChatTurnEntity>
+            {
+                new() { Question = "/joke", Answer = "Old joke 1" },
+                new() { Question = "/joke cats", Answer = "Old joke 2" },
+                new() { Question = "/JOKE", Answer = "Old joke 3" }, // case-insensitive match
+                new() { Question = "what's due tomorrow?", Answer = "The GO bill." } // not a joke
+            });
+
+        List<string>? recentJokes = null;
+        _summarizer.TellJokeAsync(Arg.Any<string>(), Arg.Do<List<string>>(j => recentJokes = j))
+            .Returns("a fresh joke");
+
+        await RunAsync(MessageUpdate(SchoolChatId, UserId, "/joke"));
+
+        // A day of history, capped at 20 turns, mined for previous punchlines
+        var expectedSince = DateTimeOffset.UtcNow.AddDays(-1);
+        await _state.Received(1).GetRecentChatTurnsAsync(
+            SchoolChatId,
+            Arg.Is<DateTimeOffset>(since => (since - expectedSince).Duration() < TimeSpan.FromMinutes(5)),
+            20);
+        Assert.Equal(new[] { "Old joke 1", "Old joke 2", "Old joke 3" }, recentJokes);
+    }
+
+    [Fact]
+    public async Task Joke_HistorySaveFailure_DoesNotBreakTheJoke()
+    {
+        _state.SaveChatTurnAsync(Arg.Any<long>(), Arg.Any<string>(), Arg.Any<string>())
+            .ThrowsAsync(new TimeoutException("tables down"));
+
+        var status = await RunAsync(MessageUpdate(SchoolChatId, UserId, "/joke"));
+
+        Assert.Equal(HttpStatusCode.OK, status);
+        await _notifications.Received(1).SendMessageAsync(SchoolChatId, "a joke");
     }
 
     // ---- /evolve command ----

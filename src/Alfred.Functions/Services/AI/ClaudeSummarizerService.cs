@@ -209,6 +209,62 @@ public class ClaudeSummarizerService : ISummarizerService
         return responseText;
     }
 
+    public async Task<string> TellJokeAsync(string topic, List<string> recentJokes)
+    {
+        var client = CreateClient();
+
+        var today = DateTime.Now.ToString("dddd, d MMMM yyyy");
+
+        var topicLine = string.IsNullOrWhiteSpace(topic)
+            ? "No topic was given — pick something yourself."
+            : $"Topic requested: {topic}";
+
+        var avoidSection = recentJokes.Count > 0
+            ? "## JOKES YOU ALREADY TOLD IN THIS CHAT (do not repeat these or anything close to them)\n"
+              + string.Join("\n", recentJokes.Select(j => $"- {j}")) + "\n\n"
+            : "";
+
+        var systemPrompt = $"""
+            You are Alfred, a personal assistant with the dry, understated wit of a good butler.
+            Today is {today}. You have been asked for a joke.
+
+            Tell exactly ONE joke. Keep it short — two or three lines at most.
+            Keep it clean and family-friendly: the same joke may land in a family chat with children around.
+            No politics, no religion, no jokes about real people.
+
+            If a topic is given, make the joke about that topic. If not, pick something yourself —
+            wordplay, dad jokes, and gentle observational humour all work.
+
+            Reply with the joke only — no preamble, no "here's a joke", no explanation afterwards.
+
+            Format your reply using Telegram HTML:
+            - Use <b>bold</b> sparingly, for the punchline at most
+            - Only use <b> tags
+            """;
+
+        var userPrompt = $"""
+            {avoidSection}## REQUEST
+            {topicLine}
+            """;
+
+        var parameters = new MessageParameters
+        {
+            Model = Anthropic.SDK.Constants.AnthropicModels.Claude46Opus,
+            MaxTokens = 512,
+            System = [new SystemMessage(systemPrompt)],
+            Messages = [new Message(RoleType.User, userPrompt)]
+        };
+
+        var response = await client.Messages.GetClaudeMessageAsync(parameters);
+
+        var responseText = response.Content?.OfType<TextContent>().FirstOrDefault()?.Text
+            ?? "I'm afraid my sense of humour has failed me. Ask me again in a moment.";
+
+        _logger.LogInformation("Told a joke ({Length} chars), topic: {Topic}, avoided {Count} recent",
+            responseText.Length, string.IsNullOrWhiteSpace(topic) ? "(none)" : topic, recentJokes.Count);
+        return responseText.Trim();
+    }
+
     public async Task<string> BuildPersonalDigestAsync(
         List<ProcessedEmailEntity> todaysEmails,
         List<Google.Apis.Calendar.v3.Data.Event> upcomingActions,

@@ -192,6 +192,96 @@ public class ClaudeSummarizerApiTests
         Assert.Contains("and Tuesday?", prompt);
     }
 
+    // ---- Jokes ----
+
+    [Fact]
+    public async Task TellJoke_SendsTheButlerPromptAndReturnsTheTrimmedReply()
+    {
+        _http.EnqueueJson(TextResponse("  Why did the scarecrow win an award? <b>Outstanding in his field.</b>\n"));
+
+        var joke = await _service.TellJokeAsync("", []);
+
+        Assert.Equal("Why did the scarecrow win an award? <b>Outstanding in his field.</b>", joke);
+
+        var body = RequestBody();
+        Assert.Equal(Anthropic.SDK.Constants.AnthropicModels.Claude46Opus, body.GetProperty("model").GetString());
+        Assert.Equal(512, body.GetProperty("max_tokens").GetInt32());
+        // The contract: one short, clean joke, no preamble
+        var system = body.GetProperty("system").ToString();
+        Assert.Contains("exactly ONE joke", system);
+        Assert.Contains("family-friendly", system);
+        Assert.Contains("the joke only", system);
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("   ")]
+    public async Task TellJoke_NoTopic_TellsTheModelToPickOne(string topic)
+    {
+        _http.EnqueueJson(TextResponse("A joke."));
+
+        await _service.TellJokeAsync(topic, []);
+
+        var prompt = RequestUserText();
+        Assert.Contains("No topic was given — pick something yourself.", prompt);
+        Assert.DoesNotContain("Topic requested:", prompt);
+    }
+
+    [Fact]
+    public async Task TellJoke_Topic_IsPassedThroughToThePrompt()
+    {
+        _http.EnqueueJson(TextResponse("A penguin joke."));
+
+        await _service.TellJokeAsync("penguins", []);
+
+        var prompt = RequestUserText();
+        Assert.Contains("Topic requested: penguins", prompt);
+        Assert.DoesNotContain("No topic was given", prompt);
+    }
+
+    [Fact]
+    public async Task TellJoke_RecentJokes_RideAlongAsADoNotRepeatList()
+    {
+        _http.EnqueueJson(TextResponse("A fresh joke."));
+
+        await _service.TellJokeAsync("", ["Old joke A", "Old joke B"]);
+
+        var prompt = RequestUserText();
+        Assert.Contains("JOKES YOU ALREADY TOLD IN THIS CHAT", prompt);
+        Assert.Contains("- Old joke A", prompt);
+        Assert.Contains("- Old joke B", prompt);
+    }
+
+    [Fact]
+    public async Task TellJoke_NoRecentJokes_OmitsTheDoNotRepeatSection()
+    {
+        _http.EnqueueJson(TextResponse("A joke."));
+
+        await _service.TellJokeAsync("", []);
+
+        Assert.DoesNotContain("JOKES YOU ALREADY TOLD", RequestUserText());
+    }
+
+    [Fact]
+    public async Task TellJoke_ReplyWithoutText_FallsBackToAnApology()
+    {
+        // A reply with no text blocks at all
+        _http.EnqueueJson(JsonSerializer.Serialize(new
+        {
+            id = "msg_1",
+            type = "message",
+            role = "assistant",
+            model = "claude-test",
+            content = Array.Empty<object>(),
+            stop_reason = "end_turn",
+            usage = new { input_tokens = 10, output_tokens = 20 }
+        }));
+
+        var joke = await _service.TellJokeAsync("", []);
+
+        Assert.Equal("I'm afraid my sense of humour has failed me. Ask me again in a moment.", joke);
+    }
+
     // ---- The personal Q&A tool loop ----
 
     [Fact]
