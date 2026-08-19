@@ -249,7 +249,7 @@ public class GoogleCalendarService : ICalendarService
         return response.Items.Any(e => TitlesAreSimilar(eventInfo.Title, e.Summary ?? ""));
     }
 
-    private static bool TitlesAreSimilar(string a, string b)
+    internal static bool TitlesAreSimilar(string a, string b)
     {
         var wordsA = ExtractSignificantWords(StripCategoryPrefix(a));
         var wordsB = ExtractSignificantWords(StripCategoryPrefix(b));
@@ -270,7 +270,7 @@ public class GoogleCalendarService : ICalendarService
     private static readonly HashSet<string> CategoryPrefixes = new(StringComparer.OrdinalIgnoreCase)
         { "Outing", "Activity", "Meeting", "Deadline", "Holiday", "Appointment" };
 
-    private static string StripCategoryPrefix(string title)
+    internal static string StripCategoryPrefix(string title)
     {
         var colon = title.IndexOf(':');
         if (colon < 0) return title;
@@ -281,7 +281,7 @@ public class GoogleCalendarService : ICalendarService
     private static readonly HashSet<string> StopWords =
         ["year", "1", "2", "3", "4", "5", "6", "the", "a", "an", "for", "and", "of", "to", "in", "at", "on", "by", "all"];
 
-    private static HashSet<string> ExtractSignificantWords(string text)
+    internal static HashSet<string> ExtractSignificantWords(string text)
     {
         var words = text
             .ToLowerInvariant()
@@ -331,7 +331,7 @@ public class GoogleCalendarService : ICalendarService
         _logger.LogInformation("Deleted calendar event: {Title}", eventInfo.Title);
     }
 
-    private static Event BuildCalendarEvent(CalendarEventInfo eventInfo, bool tagAsAlfred)
+    internal static Event BuildCalendarEvent(CalendarEventInfo eventInfo, bool tagAsAlfred)
     {
         var calendarEvent = new Event
         {
@@ -384,7 +384,7 @@ public class GoogleCalendarService : ICalendarService
     // Google stores a reminder as an offset from the event start, so an offset pointing at a
     // moment that has already gone simply never fires. Anything created or moved after the
     // usual nudge time gets pulled forward instead of being lost.
-    private static Event.RemindersData BuildReminder(DateTime startMalta)
+    internal static Event.RemindersData BuildReminder(DateTime startMalta)
     {
         var maltaTz = TimeZoneInfo.FindSystemTimeZoneById("Europe/Malta");
         var nowMalta = TimeZoneInfo.ConvertTime(DateTimeOffset.UtcNow, maltaTz).DateTime;
@@ -403,7 +403,7 @@ public class GoogleCalendarService : ICalendarService
         };
     }
 
-    private static DateTime GetSchoolDaysFromNow(DateTime start, int schoolDays)
+    internal static DateTime GetSchoolDaysFromNow(DateTime start, int schoolDays)
     {
         var current = start.Date;
         var count = 0;
@@ -416,14 +416,20 @@ public class GoogleCalendarService : ICalendarService
         return current;
     }
 
-    private static string ComputeHash(string input)
+    internal static string ComputeHash(string input)
     {
         var bytes = SHA256.HashData(Encoding.UTF8.GetBytes(input));
         return Convert.ToHexString(bytes)[..16].ToLowerInvariant();
     }
 
+    // Test seam: when set, replaces the fully-built CalendarService (tests back it
+    // with a fake HTTP handler). Never set in production.
+    internal CalendarService? CalendarServiceOverride { get; set; }
+
     private CalendarService CreateCalendarService()
     {
+        if (CalendarServiceOverride is not null) return CalendarServiceOverride;
+
         var flow = new GoogleAuthorizationCodeFlow(new GoogleAuthorizationCodeFlow.Initializer
         {
             ClientSecrets = new ClientSecrets

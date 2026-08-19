@@ -710,7 +710,7 @@ public class ClaudeSummarizerService : ISummarizerService
         return "I tried to help but got stuck in a loop of actions — please check Gmail directly.";
     }
 
-    private static string FormatConversationSection(List<ChatTurnEntity> recentTurns)
+    internal static string FormatConversationSection(List<ChatTurnEntity> recentTurns)
     {
         if (recentTurns.Count == 0)
             return string.Empty;
@@ -728,15 +728,21 @@ public class ClaudeSummarizerService : ISummarizerService
             + string.Join("\n", lines) + "\n\n";
     }
 
-    private static AnthropicClient CreateClient()
+    // Test seam: when set, replaces the live client (tests back it with a fake
+    // HttpClient). Never set in production.
+    internal Func<AnthropicClient>? ClientFactory { get; set; }
+
+    private AnthropicClient CreateClient()
     {
+        if (ClientFactory is not null) return ClientFactory();
+
         var apiKey = Environment.GetEnvironmentVariable("Anthropic__ApiKey")
             ?? throw new InvalidOperationException("Anthropic API key not configured");
 
         return new AnthropicClient(apiKey);
     }
 
-    private static string BuildSummarizePrompt(SchoolEmail email, string today, string documentContent, string linksContent)
+    internal static string BuildSummarizePrompt(SchoolEmail email, string today, string documentContent, string linksContent)
     {
         return $"""
             You are Alfred, a personal assistant helping parents of Valentina, a Year 1 Bluebells student at Sacred Heart College Junior School (moving to Year 2 in September/October 2026).
@@ -861,7 +867,7 @@ public class ClaudeSummarizerService : ISummarizerService
             """;
     }
 
-    private static string BuildTriagePrompt(SchoolEmail email, string today, string documentContent, List<SuppressionRuleEntity> suppressionRules, List<AttentionRuleEntity> attentionRules, List<ProcessedEmailEntity> threadContext)
+    internal static string BuildTriagePrompt(SchoolEmail email, string today, string documentContent, List<SuppressionRuleEntity> suppressionRules, List<AttentionRuleEntity> attentionRules, List<ProcessedEmailEntity> threadContext)
     {
         // Cap the body — personal inbox emails (marketing, long threads) can be huge after HTML stripping
         var body = email.Body.Length > 8000
@@ -1044,7 +1050,7 @@ public class ClaudeSummarizerService : ISummarizerService
             """;
     }
 
-    private static PersonalEmailTriage ParseTriageResponse(string json, SchoolEmail email)
+    internal static PersonalEmailTriage ParseTriageResponse(string json, SchoolEmail email)
     {
         try
         {
@@ -1112,7 +1118,7 @@ public class ClaudeSummarizerService : ISummarizerService
         }
     }
 
-    private static (string System, string User) BuildDigestPrompt(string todayStr, string emailSummaries, int emailCount, string eventsList, string homeworkSummary)
+    internal static (string System, string User) BuildDigestPrompt(string todayStr, string emailSummaries, int emailCount, string eventsList, string homeworkSummary)
     {
         var systemPrompt = $"""
             You are Alfred, a personal assistant for the parents of Valentina, a Year 1 Bluebells student at Sacred Heart College Junior School (moving to Year 2 in September/October 2026).
@@ -1167,7 +1173,7 @@ public class ClaudeSummarizerService : ISummarizerService
         return (systemPrompt, userPrompt);
     }
 
-    private static EmailDigest ParseDigestResponse(string json)
+    internal static EmailDigest ParseDigestResponse(string json)
     {
         try
         {

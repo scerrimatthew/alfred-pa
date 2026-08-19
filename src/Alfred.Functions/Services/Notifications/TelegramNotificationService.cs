@@ -65,9 +65,7 @@ public class TelegramNotificationService : INotificationService
 
     public async Task AnswerCallbackAsync(string callbackQueryId, string? text = null)
     {
-        var client = new TelegramBotClient(
-            Environment.GetEnvironmentVariable("Telegram__BotToken")
-                ?? throw new InvalidOperationException("Telegram bot token not configured"));
+        var client = CreateBotClient();
 
         await client.AnswerCallbackQuery(callbackQueryId, text);
     }
@@ -84,9 +82,7 @@ public class TelegramNotificationService : INotificationService
 
     public async Task SendMessageAsync(long chatId, string message)
     {
-        var client = new TelegramBotClient(
-            Environment.GetEnvironmentVariable("Telegram__BotToken")
-                ?? throw new InvalidOperationException("Telegram bot token not configured"));
+        var client = CreateBotClient();
 
         var chunks = SplitMessage(message);
         foreach (var chunk in chunks)
@@ -97,17 +93,28 @@ public class TelegramNotificationService : INotificationService
         _logger.LogInformation("Sent Telegram reply to chat {ChatId} ({Chunks} chunk(s))", chatId, chunks.Count);
     }
 
-    private static (TelegramBotClient client, string chatId) GetClientAndChatId(string chatIdVariable)
+    // Test seam: HttpClient handed to TelegramBotClient so tests can fake the Bot API.
+    // Never set in production.
+    internal HttpClient? BotHttpClient { get; set; }
+
+    private TelegramBotClient CreateBotClient()
     {
         var botToken = Environment.GetEnvironmentVariable("Telegram__BotToken")
             ?? throw new InvalidOperationException("Telegram bot token not configured");
+
+        return new TelegramBotClient(botToken, BotHttpClient);
+    }
+
+    private (TelegramBotClient client, string chatId) GetClientAndChatId(string chatIdVariable)
+    {
+        var client = CreateBotClient();
         var chatId = Environment.GetEnvironmentVariable(chatIdVariable)
             ?? throw new InvalidOperationException($"Telegram chat ID not configured ({chatIdVariable})");
 
-        return (new TelegramBotClient(botToken), chatId);
+        return (client, chatId);
     }
 
-    private static List<string> SplitMessage(string message)
+    internal static List<string> SplitMessage(string message)
     {
         if (message.Length <= MaxMessageLength)
             return [message];

@@ -407,10 +407,10 @@ public partial class GmailReaderService : IGmailReaderService
         return _ownAddressCache;
     }
 
-    private static IEnumerable<string> SplitAddresses(string headerValue) =>
+    internal static IEnumerable<string> SplitAddresses(string headerValue) =>
         headerValue.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
 
-    private static string EncodeHeaderValue(string value) =>
+    internal static string EncodeHeaderValue(string value) =>
         value.All(char.IsAscii)
             ? value
             : $"=?utf-8?B?{Convert.ToBase64String(Encoding.UTF8.GetBytes(value))}?=";
@@ -474,7 +474,7 @@ public partial class GmailReaderService : IGmailReaderService
         return _labelIdCache[labelPath];
     }
 
-    private async Task<SchoolEmail?> ParseMessageAsync(GmailService gmailService, Message message, bool downloadLinkedDocuments)
+    internal async Task<SchoolEmail?> ParseMessageAsync(GmailService gmailService, Message message, bool downloadLinkedDocuments)
     {
         try
         {
@@ -675,7 +675,7 @@ public partial class GmailReaderService : IGmailReaderService
         return GetFileNameFromUrl(url);
     }
 
-    private static string GetFileNameFromUrl(string url)
+    internal static string GetFileNameFromUrl(string url)
     {
         try
         {
@@ -698,7 +698,7 @@ public partial class GmailReaderService : IGmailReaderService
         return null;
     }
 
-    private static List<string> ExtractLinks(string html)
+    internal static List<string> ExtractLinks(string html)
     {
         var links = new List<string>();
         foreach (var match in HrefRegex().Matches(html).Cast<Match>())
@@ -729,26 +729,26 @@ public partial class GmailReaderService : IGmailReaderService
         }
     }
 
-    private static string DecodeBase64(string base64Url)
+    internal static string DecodeBase64(string base64Url)
     {
         var base64 = base64Url.Replace('-', '+').Replace('_', '/');
         var bytes = Convert.FromBase64String(base64);
         return Encoding.UTF8.GetString(bytes);
     }
 
-    private static string ExtractSenderName(string from)
+    internal static string ExtractSenderName(string from)
     {
         var match = SenderNameRegex().Match(from);
         return match.Success ? match.Groups[1].Value.Trim('"') : from;
     }
 
-    private static string ExtractEmail(string from)
+    internal static string ExtractEmail(string from)
     {
         var match = EmailRegex().Match(from);
         return match.Success ? match.Groups[1].Value : from;
     }
 
-    private static string StripHtml(string html)
+    internal static string StripHtml(string html)
     {
         // Remove style and script blocks entirely
         var text = StyleScriptRegex().Replace(html, "");
@@ -778,8 +778,14 @@ public partial class GmailReaderService : IGmailReaderService
         return text.Trim();
     }
 
+    // Test seam: when set, replaces the fully-built GmailService (tests back it with
+    // a fake HTTP handler). Never set in production.
+    internal GmailService? GmailServiceOverride { get; set; }
+
     private GmailService CreateGmailService()
     {
+        if (GmailServiceOverride is not null) return GmailServiceOverride;
+
         var flow = new GoogleAuthorizationCodeFlow(new GoogleAuthorizationCodeFlow.Initializer
         {
             ClientSecrets = new ClientSecrets
