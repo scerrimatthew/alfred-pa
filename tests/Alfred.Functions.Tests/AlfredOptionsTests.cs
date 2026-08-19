@@ -26,6 +26,8 @@ public class AlfredOptionsTests
         Assert.False(options.SendEmptyDigest);
         Assert.Equal(string.Empty, options.PersonalTelegramChatId);
         Assert.Equal(string.Empty, options.AllowedTelegramUserIds);
+        Assert.True(options.AiNewsEnabled);
+        Assert.Equal(5, options.AiNewsMaxItems);
     }
 
     [Theory]

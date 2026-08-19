@@ -596,6 +596,37 @@ public class TelegramWebhookFunction
                 return $"Attention rule {ruleId} removed.";
             }
 
+            case "add_news_rule":
+            {
+                var instruction = input?["instruction"]?.GetValue<string>();
+                if (string.IsNullOrWhiteSpace(instruction))
+                    return "Error: no instruction provided.";
+
+                var ruleId = Guid.NewGuid().ToString("N")[..8];
+                await _stateService.SaveNewsRuleAsync(ruleId, instruction);
+                return $"News preference {ruleId} saved: {instruction}";
+            }
+
+            case "list_news_rules":
+            {
+                var rules = await _stateService.GetNewsRulesAsync();
+                if (rules.Count == 0)
+                    return "No news digest preferences are set.";
+
+                return string.Join("\n", rules.OrderBy(r => r.CreatedAt).Select(r =>
+                    $"[{r.RowKey}] {r.Instruction} (added {r.CreatedAt:d MMM yyyy})"));
+            }
+
+            case "remove_news_rule":
+            {
+                var ruleId = input?["rule_id"]?.GetValue<string>();
+                if (string.IsNullOrWhiteSpace(ruleId))
+                    return "Error: no rule_id provided.";
+
+                await _stateService.DeleteNewsRuleAsync(ruleId);
+                return $"News preference {ruleId} removed.";
+            }
+
             case "snooze_email":
             {
                 var messageId = input?["message_id"]?.GetValue<string>();

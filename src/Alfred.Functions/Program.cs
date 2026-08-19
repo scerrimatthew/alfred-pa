@@ -30,6 +30,7 @@ var host = new HostBuilder()
         services.AddSingleton<IPdfExtractorService, PdfExtractorService>();
         services.AddSingleton<IGmailReaderService, GmailReaderService>();
         services.AddSingleton<ISummarizerService, ClaudeSummarizerService>();
+        services.AddSingleton<INewsResearchService, ClaudeNewsResearchService>();
         services.AddSingleton<ICalendarService, GoogleCalendarService>();
         services.AddSingleton<INotificationService, TelegramNotificationService>();
     })

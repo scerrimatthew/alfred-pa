@@ -181,6 +181,63 @@ public class TelegramWebhookToolTests : IAsyncLifetime
         Assert.Contains("a1", result);
     }
 
+    // ---- News digest preferences ----
+
+    [Fact]
+    public async Task AddNewsRule_SavesTheInstructionWithAGeneratedId()
+    {
+        var result = await _executeTool("add_news_rule", Input(new { instruction = "Stop covering funding rounds" }));
+
+        await _state.Received(1).SaveNewsRuleAsync(Arg.Is<string>(id => id.Length == 8), "Stop covering funding rounds");
+        Assert.Contains("Stop covering funding rounds", result);
+    }
+
+    [Fact]
+    public async Task AddNewsRule_WithoutInstruction_ReturnsAnError()
+    {
+        var result = await _executeTool("add_news_rule", Input(new { }));
+
+        Assert.StartsWith("Error:", result);
+        await _state.DidNotReceiveWithAnyArgs().SaveNewsRuleAsync(default!, default!);
+    }
+
+    [Fact]
+    public async Task ListNewsRules_EmptyAndPopulated_OldestFirst()
+    {
+        _state.GetNewsRulesAsync().Returns(new List<NewsRuleEntity>());
+        Assert.Equal("No news digest preferences are set.", await _executeTool("list_news_rules", null));
+
+        _state.GetNewsRulesAsync().Returns(new List<NewsRuleEntity>
+        {
+            new() { RowKey = "n2", Instruction = "Newer preference", CreatedAt = new DateTimeOffset(2026, 2, 1, 0, 0, 0, TimeSpan.Zero) },
+            new() { RowKey = "n1", Instruction = "Older preference", CreatedAt = new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero) }
+        });
+        var listing = await _executeTool("list_news_rules", null);
+
+        Assert.Contains("[n1] Older preference", listing);
+        Assert.Contains("[n2] Newer preference", listing);
+        Assert.True(listing.IndexOf("n1", StringComparison.Ordinal) < listing.IndexOf("n2", StringComparison.Ordinal),
+            "news preferences must be listed oldest first");
+    }
+
+    [Fact]
+    public async Task RemoveNewsRule_DeletesById()
+    {
+        var result = await _executeTool("remove_news_rule", Input(new { rule_id = "n1" }));
+
+        await _state.Received(1).DeleteNewsRuleAsync("n1");
+        Assert.Contains("n1", result);
+    }
+
+    [Fact]
+    public async Task RemoveNewsRule_WithoutId_ReturnsAnError()
+    {
+        var result = await _executeTool("remove_news_rule", Input(new { }));
+
+        Assert.StartsWith("Error:", result);
+        await _state.DidNotReceiveWithAnyArgs().DeleteNewsRuleAsync(default!);
+    }
+
     // ---- Snoozes ----
 
     [Fact]

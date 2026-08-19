@@ -30,6 +30,11 @@ public interface IStateService
     Task<List<AttentionRuleEntity>> GetAttentionRulesAsync();
     Task SaveAttentionRuleAsync(string ruleId, string pattern, string? exampleSender, string? exampleSubject);
     Task DeleteAttentionRuleAsync(string ruleId);
+    Task<List<NewsRuleEntity>> GetNewsRulesAsync();
+    Task SaveNewsRuleAsync(string ruleId, string instruction);
+    Task DeleteNewsRuleAsync(string ruleId);
+    Task<List<ReportedNewsEntity>> GetReportedNewsSinceAsync(DateTimeOffset since);
+    Task SaveReportedNewsAsync(List<AiNewsItem> items);
     Task<List<ProcessedEmailEntity>> GetEmailsSinceAsync(DateTimeOffset since);
     Task<List<ProcessedEmailEntity>> GetPersonalEmailsSinceAsync(DateTimeOffset since);
     Task SaveChatTurnAsync(long chatId, string question, string answer);

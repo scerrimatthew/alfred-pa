@@ -395,6 +395,14 @@ public class ClaudeSummarizerService : ISummarizerService
               08:00 that morning. Alfred re-sends the alert at that time.
             - list_snoozes / cancel_snooze: review or cancel pending reminders ("what have I
               snoozed?", "forget that reminder" — list first to find the id if needed).
+            - add_news_rule: when Matthew gives feedback on the evening AI-news digest
+              ("stop covering funding rounds", "more on EU AI Act enforcement", "that
+              consultancy story was spot on — more like it"). Write the instruction as a
+              GENERALIZED standing preference for future digests, keeping his direction
+              (more of / less of / never) explicit.
+            - list_news_rules / remove_news_rule: review or undo news digest preferences
+              ("what news feedback have I given you?", "start covering funding rounds again"
+              — list first to find the rule id if you don't have it).
             - draft_reply: write a reply to an email and save it in his Gmail Drafts for him to
               review and send — NOTHING is ever sent automatically. Use when Matthew asks to
               reply to an email ("reply saying I'll pay Friday", "tell Antonio Thursday works").
@@ -602,6 +610,36 @@ public class ClaudeSummarizerService : ISummarizerService
                         "message_id": { "type": "string", "description": "The Gmail message id of the snoozed email (from list_snoozes or id=...)" }
                     },
                     "required": ["message_id"]
+                }
+                """)),
+            new Anthropic.SDK.Common.Function(
+                "add_news_rule",
+                "Save a standing preference for the evening AI-news digest — what to cover more, less, or never. Use when Matthew gives feedback on the news briefing.",
+                System.Text.Json.Nodes.JsonNode.Parse("""
+                {
+                    "type": "object",
+                    "properties": {
+                        "instruction": { "type": "string", "description": "Generalized standing preference, e.g. \"Skip funding-round stories entirely\" or \"Go deeper on EU AI Act enforcement actions\"" }
+                    },
+                    "required": ["instruction"]
+                }
+                """)),
+            new Anthropic.SDK.Common.Function(
+                "list_news_rules",
+                "List the active AI-news digest preferences with their ids.",
+                System.Text.Json.Nodes.JsonNode.Parse("""
+                { "type": "object", "properties": {} }
+                """)),
+            new Anthropic.SDK.Common.Function(
+                "remove_news_rule",
+                "Delete an AI-news digest preference.",
+                System.Text.Json.Nodes.JsonNode.Parse("""
+                {
+                    "type": "object",
+                    "properties": {
+                        "rule_id": { "type": "string", "description": "The id of the rule to remove (from list_news_rules)" }
+                    },
+                    "required": ["rule_id"]
                 }
                 """)),
             new Anthropic.SDK.Common.Function(

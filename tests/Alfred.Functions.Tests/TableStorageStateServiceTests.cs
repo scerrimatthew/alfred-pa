@@ -25,6 +25,8 @@ public class TableStorageStateServiceTests
     private readonly List<AttentionRuleEntity> _attentionRules = [];
     private readonly List<CalendarEventEntity> _calendarEvents = [];
     private readonly List<BackfillStateEntity> _backfillState = [];
+    private readonly List<NewsRuleEntity> _newsRules = [];
+    private readonly List<ReportedNewsEntity> _reportedNews = [];
 
     public TableStorageStateServiceTests()
     {
@@ -38,6 +40,8 @@ public class TableStorageStateServiceTests
         var attentionRulesClient = CreateTableClient(_attentionRules);
         var calendarEventsClient = CreateTableClient(_calendarEvents);
         var backfillStateClient = CreateTableClient(_backfillState);
+        var newsRulesClient = CreateTableClient(_newsRules);
+        var reportedNewsClient = CreateTableClient(_reportedNews);
 
         var serviceClient = Substitute.For<TableServiceClient>();
         serviceClient.GetTableClient("ProcessedEmails").Returns(processedEmailsClient);
@@ -48,6 +52,8 @@ public class TableStorageStateServiceTests
         serviceClient.GetTableClient("AttentionRules").Returns(attentionRulesClient);
         serviceClient.GetTableClient("CalendarEvents").Returns(calendarEventsClient);
         serviceClient.GetTableClient("BackfillState").Returns(backfillStateClient);
+        serviceClient.GetTableClient("NewsRules").Returns(newsRulesClient);
+        serviceClient.GetTableClient("ReportedNews").Returns(reportedNewsClient);
 
         _service = new TableStorageStateService(serviceClient, NullLogger<TableStorageStateService>.Instance);
     }
@@ -479,6 +485,86 @@ public class TableStorageStateServiceTests
 
         await _service.DeleteCalendarEventMappingAsync("hash1");
         Assert.Null(await _service.GetCalendarEventMappingAsync("hash1"));
+    }
+
+    // ---- AI news rules and reported stories ----
+
+    [Fact]
+    public async Task NewsRules_SaveListDeleteRoundTrip()
+    {
+        await _service.SaveNewsRuleAsync("n1", "Skip funding rounds");
+
+        var rule = Assert.Single(await _service.GetNewsRulesAsync());
+        Assert.Equal("n1", rule.RowKey);
+        Assert.Equal("rules", rule.PartitionKey);
+        Assert.Equal("Skip funding rounds", rule.Instruction);
+        Assert.True((DateTimeOffset.UtcNow - rule.CreatedAt).Duration() < TimeSpan.FromMinutes(1));
+
+        await _service.DeleteNewsRuleAsync("n1");
+        Assert.Empty(await _service.GetNewsRulesAsync());
+    }
+
+    [Fact]
+    public async Task GetReportedNewsSince_AppliesPartitionAndDateWindow()
+    {
+        var now = DateTimeOffset.UtcNow;
+        _reportedNews.Add(new ReportedNewsEntity { PartitionKey = "news", RowKey = "recent", ReportedAt = now.AddDays(-3) });
+        _reportedNews.Add(new ReportedNewsEntity { PartitionKey = "news", RowKey = "stale", ReportedAt = now.AddDays(-20) });
+        _reportedNews.Add(new ReportedNewsEntity { PartitionKey = "other", RowKey = "wrong-partition", ReportedAt = now.AddDays(-3) });
+
+        var results = await _service.GetReportedNewsSinceAsync(now.AddDays(-14));
+
+        Assert.Equal("recent", Assert.Single(results).RowKey);
+    }
+
+    [Fact]
+    public async Task SaveReportedNews_KeysRowsByUrlHashSoRepeatsOverwrite()
+    {
+        await _service.SaveReportedNewsAsync(
+        [
+            new AiNewsItem { Headline = "First", Url = "https://a.example/story", Category = "competitor" },
+            new AiNewsItem { Headline = "Second", Url = "https://b.example/story" }
+        ]);
+        // Re-reporting the same story must overwrite the row, not duplicate it
+        await _service.SaveReportedNewsAsync(
+            [new AiNewsItem { Headline = "First, updated", Url = "https://a.example/story" }]);
+
+        Assert.Equal(2, _reportedNews.Count);
+
+        var first = _reportedNews.Single(e => e.Url == "https://a.example/story");
+        Assert.Equal(TableStorageStateService.HashUrl("https://a.example/story"), first.RowKey);
+        Assert.Equal("news", first.PartitionKey);
+        Assert.Equal("First, updated", first.Headline);
+        Assert.True((DateTimeOffset.UtcNow - first.ReportedAt).Duration() < TimeSpan.FromMinutes(1));
+
+        var second = _reportedNews.Single(e => e.Url == "https://b.example/story");
+        Assert.Equal("Second", second.Headline);
+        Assert.Null(second.Category); // optional category stays null
+    }
+
+    [Fact]
+    public async Task SaveReportedNews_PrunesStoriesOlderThanSixtyDays()
+    {
+        var now = DateTimeOffset.UtcNow;
+        _reportedNews.Add(new ReportedNewsEntity { PartitionKey = "news", RowKey = "ancient", ReportedAt = now.AddDays(-90) });
+        _reportedNews.Add(new ReportedNewsEntity { PartitionKey = "news", RowKey = "keeper", ReportedAt = now.AddDays(-10) });
+
+        await _service.SaveReportedNewsAsync([new AiNewsItem { Headline = "H", Url = "https://new.example" }]);
+
+        Assert.DoesNotContain(_reportedNews, e => e.RowKey == "ancient");
+        Assert.Contains(_reportedNews, e => e.RowKey == "keeper");
+        Assert.Equal(2, _reportedNews.Count); // keeper + the new story
+    }
+
+    [Fact]
+    public void HashUrl_IsDeterministicSixteenCharLowercaseHex()
+    {
+        var hash = TableStorageStateService.HashUrl("https://example.com/story");
+
+        Assert.Equal(16, hash.Length);
+        Assert.Matches("^[0-9a-f]{16}$", hash);
+        Assert.Equal(hash, TableStorageStateService.HashUrl("https://example.com/story"));
+        Assert.NotEqual(hash, TableStorageStateService.HashUrl("https://example.com/other"));
     }
 
     // ---- Backfill marker ----

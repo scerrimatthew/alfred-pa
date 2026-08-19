@@ -142,6 +142,49 @@ public class InMemoryStateService : IStateService
         return Task.CompletedTask;
     }
 
+    private readonly Dictionary<string, NewsRuleEntity> _newsRules = new();
+    private readonly Dictionary<string, ReportedNewsEntity> _reportedNews = new();
+
+    public Task<List<NewsRuleEntity>> GetNewsRulesAsync() =>
+        Task.FromResult(_newsRules.Values.ToList());
+
+    public Task SaveNewsRuleAsync(string ruleId, string instruction)
+    {
+        _newsRules[ruleId] = new NewsRuleEntity
+        {
+            RowKey = ruleId,
+            Instruction = instruction,
+            CreatedAt = DateTimeOffset.UtcNow
+        };
+        return Task.CompletedTask;
+    }
+
+    public Task DeleteNewsRuleAsync(string ruleId)
+    {
+        _newsRules.Remove(ruleId);
+        return Task.CompletedTask;
+    }
+
+    public Task<List<ReportedNewsEntity>> GetReportedNewsSinceAsync(DateTimeOffset since) =>
+        Task.FromResult(_reportedNews.Values.Where(e => e.ReportedAt >= since).ToList());
+
+    public Task SaveReportedNewsAsync(List<AiNewsItem> items)
+    {
+        var now = DateTimeOffset.UtcNow;
+        foreach (var item in items)
+        {
+            _reportedNews[item.Url] = new ReportedNewsEntity
+            {
+                RowKey = item.Url,
+                Headline = item.Headline,
+                Url = item.Url,
+                Category = item.Category,
+                ReportedAt = now
+            };
+        }
+        return Task.CompletedTask;
+    }
+
     private readonly Dictionary<string, SenderStatsEntity> _senderStats = new();
 
     public Task RecordSenderSeenAsync(string senderEmail, string senderName, bool wasQuiet, string? listUnsubscribe, bool oneClick)

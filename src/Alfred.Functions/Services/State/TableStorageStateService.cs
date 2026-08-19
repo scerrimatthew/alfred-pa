@@ -15,9 +15,12 @@ public class TableStorageStateService : IStateService
     private const string SenderStatsTable = "SenderStats";
     private const string BackfillStateTable = "BackfillState";
     private const string ChatHistoryTable = "ChatHistory";
+    private const string NewsRulesTable = "NewsRules";
+    private const string ReportedNewsTable = "ReportedNews";
     private const string SchoolPartition = "emails";
     private const string PersonalPartition = "personal";
     private const string RulesPartition = "rules";
+    private const string NewsPartition = "news";
 
     private readonly TableServiceClient _tableServiceClient;
     private readonly ILogger<TableStorageStateService> _logger;
@@ -475,6 +478,108 @@ public class TableStorageStateService : IStateService
         {
             // Already gone, ignore
         }
+    }
+
+    public async Task<List<NewsRuleEntity>> GetNewsRulesAsync()
+    {
+        var tableClient = _tableServiceClient.GetTableClient(NewsRulesTable);
+        await tableClient.CreateIfNotExistsAsync();
+
+        var results = new List<NewsRuleEntity>();
+        var query = tableClient.QueryAsync<NewsRuleEntity>(e => e.PartitionKey == RulesPartition);
+
+        await foreach (var entity in query)
+        {
+            results.Add(entity);
+        }
+
+        return results;
+    }
+
+    public async Task SaveNewsRuleAsync(string ruleId, string instruction)
+    {
+        var tableClient = _tableServiceClient.GetTableClient(NewsRulesTable);
+        await tableClient.CreateIfNotExistsAsync();
+
+        var entity = new NewsRuleEntity
+        {
+            RowKey = ruleId,
+            Instruction = instruction,
+            CreatedAt = DateTimeOffset.UtcNow
+        };
+
+        await tableClient.UpsertEntityAsync(entity);
+        _logger.LogInformation("Saved news rule {RuleId}: {Instruction}", ruleId, instruction);
+    }
+
+    public async Task DeleteNewsRuleAsync(string ruleId)
+    {
+        var tableClient = _tableServiceClient.GetTableClient(NewsRulesTable);
+        await tableClient.CreateIfNotExistsAsync();
+
+        try
+        {
+            await tableClient.DeleteEntityAsync(RulesPartition, ruleId);
+            _logger.LogInformation("Deleted news rule {RuleId}", ruleId);
+        }
+        catch (RequestFailedException ex) when (ex.Status == 404)
+        {
+            // Already gone, ignore
+        }
+    }
+
+    public async Task<List<ReportedNewsEntity>> GetReportedNewsSinceAsync(DateTimeOffset since)
+    {
+        var tableClient = _tableServiceClient.GetTableClient(ReportedNewsTable);
+        await tableClient.CreateIfNotExistsAsync();
+
+        var results = new List<ReportedNewsEntity>();
+        var query = tableClient.QueryAsync<ReportedNewsEntity>(
+            e => e.PartitionKey == NewsPartition && e.ReportedAt >= since);
+
+        await foreach (var entity in query)
+        {
+            results.Add(entity);
+        }
+
+        return results;
+    }
+
+    public async Task SaveReportedNewsAsync(List<AiNewsItem> items)
+    {
+        var tableClient = _tableServiceClient.GetTableClient(ReportedNewsTable);
+        await tableClient.CreateIfNotExistsAsync();
+
+        var now = DateTimeOffset.UtcNow;
+        foreach (var item in items)
+        {
+            var entity = new ReportedNewsEntity
+            {
+                PartitionKey = NewsPartition,
+                // Keyed by URL hash so re-reporting the same story overwrites, not duplicates
+                RowKey = HashUrl(item.Url),
+                Headline = item.Headline,
+                Url = item.Url,
+                Category = item.Category,
+                ReportedAt = now
+            };
+            await tableClient.UpsertEntityAsync(entity);
+        }
+
+        // Prune entries past any dedup window so the table never accumulates
+        var cutoff = now.AddDays(-60);
+        var stale = tableClient.QueryAsync<ReportedNewsEntity>(
+            e => e.PartitionKey == NewsPartition && e.ReportedAt < cutoff);
+        await foreach (var old in stale)
+        {
+            await tableClient.DeleteEntityAsync(old.PartitionKey, old.RowKey);
+        }
+    }
+
+    internal static string HashUrl(string url)
+    {
+        var bytes = System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(url));
+        return Convert.ToHexString(bytes)[..16].ToLowerInvariant();
     }
 
     public async Task SaveChatTurnAsync(long chatId, string question, string answer)

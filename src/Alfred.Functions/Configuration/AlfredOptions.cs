@@ -33,6 +33,11 @@ public class AlfredOptions
     public string SummerBreakStart { get; set; } = "07-01";
     public string SummerBreakEnd { get; set; } = "09-20";
 
+    // Daily AI-news digest (evening timer, personal chat). Also requires
+    // PersonalTelegramChatId to be set.
+    public bool AiNewsEnabled { get; set; } = true;
+    public int AiNewsMaxItems { get; set; } = 5;
+
     public bool IsInSummerBreak(DateTime maltaDate)
     {
         if (!TryParseMonthDay(SummerBreakStart, out var startMonth, out var startDay) ||
