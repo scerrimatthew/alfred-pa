@@ -157,7 +157,7 @@ public class TelegramWebhookFunctionTests
     {
         _state.TryClaimUpdateAsync(777002).Returns(false);
 
-        await RunAsync(MessageUpdateWithId(777002, PersonalChatId, UserId, "/news"));
+        await RunAsync(MessageUpdateWithId(777002, PersonalChatId, UserId, "/ai-news"));
 
         await _newsResearch.DidNotReceiveWithAnyArgs().ResearchDailyNewsAsync(default!, default!, default!, default);
         await _state.DidNotReceiveWithAnyArgs().SaveNewsRequestAsync(default!);
@@ -502,7 +502,7 @@ public class TelegramWebhookFunctionTests
         _state.When(s => s.SaveNewsRequestAsync(Arg.Any<NewsRequestStateEntity>()))
             .Do(ci => marker = ci.Arg<NewsRequestStateEntity>());
 
-        await RunAsync(MessageUpdate(PersonalChatId, UserId, "/news"));
+        await RunAsync(MessageUpdate(PersonalChatId, UserId, "/ai-news"));
 
         // The in-flight marker dedups Telegram's re-deliveries while research runs
         Assert.NotNull(marker);
@@ -535,7 +535,7 @@ public class TelegramWebhookFunctionTests
         _state.When(s => s.SaveNewsRequestAsync(Arg.Any<NewsRequestStateEntity>()))
             .Do(ci => marker = ci.Arg<NewsRequestStateEntity>());
 
-        await RunAsync(MessageUpdate(PersonalChatId, UserId, "/news EU AI Act"));
+        await RunAsync(MessageUpdate(PersonalChatId, UserId, "/ai-news EU AI Act"));
 
         Assert.NotNull(marker);
         Assert.Equal("EU AI Act", marker.Topic);
@@ -551,7 +551,7 @@ public class TelegramWebhookFunctionTests
     {
         SetUpNewsResult();
 
-        await RunAsync(MessageUpdate(PersonalChatId, UserId, "/news <agents & tools>"));
+        await RunAsync(MessageUpdate(PersonalChatId, UserId, "/ai-news <agents & tools>"));
 
         // Raw user text goes into an HTML-mode message — it must arrive escaped
         await _notifications.Received(1).SendMessageAsync(
@@ -569,7 +569,7 @@ public class TelegramWebhookFunctionTests
             RequestedAt = DateTimeOffset.UtcNow.AddMinutes(-5)
         };
 
-        var status = await RunAsync(MessageUpdate(PersonalChatId, UserId, "/news"));
+        var status = await RunAsync(MessageUpdate(PersonalChatId, UserId, "/ai-news"));
 
         Assert.Equal(HttpStatusCode.OK, status);
         await _notifications.Received(1).SendMessageAsync(
@@ -588,7 +588,7 @@ public class TelegramWebhookFunctionTests
         // "started about 0 min ago" would read like a bug — the floor is one minute
         _newsMarker = new NewsRequestStateEntity { RequestedAt = DateTimeOffset.UtcNow };
 
-        await RunAsync(MessageUpdate(PersonalChatId, UserId, "/news"));
+        await RunAsync(MessageUpdate(PersonalChatId, UserId, "/ai-news"));
 
         await _notifications.Received(1).SendMessageAsync(
             PersonalChatId, Arg.Is<string>(m => m.Contains("about 1 min ago")));
@@ -602,7 +602,7 @@ public class TelegramWebhookFunctionTests
                 Arg.Any<List<NewsCandidateEntity>>(), Arg.Any<string?>())
             .Returns(new AiNewsDigest { Incomplete = true });
 
-        var status = await RunAsync(MessageUpdate(PersonalChatId, UserId, "/news"));
+        var status = await RunAsync(MessageUpdate(PersonalChatId, UserId, "/ai-news"));
 
         Assert.Equal(HttpStatusCode.OK, status);
         // Told apart from a quiet day: a cut-off run apologizes instead of "nothing new"
@@ -625,7 +625,7 @@ public class TelegramWebhookFunctionTests
         };
         SetUpNewsResult();
 
-        await RunAsync(MessageUpdate(PersonalChatId, UserId, "/news"));
+        await RunAsync(MessageUpdate(PersonalChatId, UserId, "/ai-news"));
 
         await _newsResearch.Received(1).ResearchDailyNewsAsync(
             Arg.Any<List<NewsRuleEntity>>(), Arg.Any<List<ReportedNewsEntity>>(),
@@ -633,10 +633,12 @@ public class TelegramWebhookFunctionTests
     }
 
     [Theory]
-    [InlineData("/news@AlfredBot", null)]         // Telegram's command-menu form
-    [InlineData("/news@AlfredBot EU AI Act", "EU AI Act")]
-    [InlineData("/NEWS", null)]                   // case-insensitive
-    public async Task News_BotNameSuffixAndCase_StillTriggerTheCommand(string text, string? expectedTopic)
+    [InlineData("/ai-news@AlfredBot", null)]              // bot-mention form
+    [InlineData("/ai-news@AlfredBot EU AI Act", "EU AI Act")]
+    [InlineData("/ai_news", null)]                        // underscore form (Telegram's command menu)
+    [InlineData("/ai_news@AlfredBot EU AI Act", "EU AI Act")]
+    [InlineData("/AI-NEWS", null)]                        // case-insensitive
+    public async Task News_UnderscoreMentionAndCaseVariants_AllTriggerTheCommand(string text, string? expectedTopic)
     {
         SetUpNewsResult();
 
@@ -669,7 +671,7 @@ public class TelegramWebhookFunctionTests
                 return digest;
             });
 
-        await RunAsync(MessageUpdate(PersonalChatId, UserId, "/news"));
+        await RunAsync(MessageUpdate(PersonalChatId, UserId, "/ai-news"));
 
         // The finally must recognize the marker is no longer its own and leave it alone
         await _state.DidNotReceive().ClearNewsRequestAsync();
@@ -695,7 +697,7 @@ public class TelegramWebhookFunctionTests
             }),
             logger);
 
-        var status = await RunAsync(function, MessageUpdate(PersonalChatId, UserId, "/news"));
+        var status = await RunAsync(function, MessageUpdate(PersonalChatId, UserId, "/ai-news"));
 
         Assert.Equal(HttpStatusCode.OK, status);
         // The digest went out untouched by the cleanup failure
@@ -716,7 +718,7 @@ public class TelegramWebhookFunctionTests
             _ => _newsMarker,
             _ => throw new TimeoutException("tables down"));
 
-        var status = await RunAsync(MessageUpdate(PersonalChatId, UserId, "/news"));
+        var status = await RunAsync(MessageUpdate(PersonalChatId, UserId, "/ai-news"));
 
         Assert.Equal(HttpStatusCode.OK, status);
         await _notifications.Received(1).SendPersonalAlertAsync(
@@ -728,7 +730,7 @@ public class TelegramWebhookFunctionTests
     [Fact]
     public async Task News_QuietResult_StillAnswers_UnlikeTheEveningTimer()
     {
-        await RunAsync(MessageUpdate(PersonalChatId, UserId, "/news"));
+        await RunAsync(MessageUpdate(PersonalChatId, UserId, "/ai-news"));
 
         await _notifications.Received(1).SendMessageAsync(
             PersonalChatId, Arg.Is<string>(m => m.Contains("Nothing new worth your time")));
@@ -740,7 +742,7 @@ public class TelegramWebhookFunctionTests
     [Fact]
     public async Task News_QuietTopicResult_NamesTheTopic()
     {
-        await RunAsync(MessageUpdate(PersonalChatId, UserId, "/news DORA"));
+        await RunAsync(MessageUpdate(PersonalChatId, UserId, "/ai-news DORA"));
 
         await _notifications.Received(1).SendMessageAsync(
             PersonalChatId, Arg.Is<string>(m => m.Contains("Nothing substantial on") && m.Contains("DORA")));
@@ -754,7 +756,7 @@ public class TelegramWebhookFunctionTests
                 Arg.Any<List<NewsCandidateEntity>>(), Arg.Any<string?>())
             .ThrowsAsync(new InvalidOperationException("search exploded"));
 
-        var status = await RunAsync(MessageUpdate(PersonalChatId, UserId, "/news"));
+        var status = await RunAsync(MessageUpdate(PersonalChatId, UserId, "/ai-news"));
 
         Assert.Equal(HttpStatusCode.OK, status);
         await _notifications.Received(1).SendMessageAsync(
@@ -763,28 +765,53 @@ public class TelegramWebhookFunctionTests
         await _state.Received(1).ClearNewsRequestAsync();
     }
 
-    [Fact]
-    public async Task News_FromTheSchoolChat_IsTreatedAsAnOrdinaryQuestion()
+    [Theory]
+    [InlineData("/ai-news")]
+    [InlineData("/news")] // the old name gets no redirect in the school chat either
+    public async Task News_FromTheSchoolChat_IsTreatedAsAnOrdinaryQuestion(string text)
     {
-        await RunAsync(MessageUpdate(SchoolChatId, UserId, "/news"));
+        await RunAsync(MessageUpdate(SchoolChatId, UserId, text));
 
         await _newsResearch.DidNotReceiveWithAnyArgs().ResearchDailyNewsAsync(default!, default!, default!, default);
         await _summarizer.Received(1).AnswerQuestionAsync(
-            "/news", Arg.Any<List<ProcessedEmailEntity>>(), Arg.Any<List<Event>>(), Arg.Any<List<ChatTurnEntity>>());
+            text, Arg.Any<List<ProcessedEmailEntity>>(), Arg.Any<List<Event>>(), Arg.Any<List<ChatTurnEntity>>());
     }
 
-    [Fact]
-    public async Task NewsPrefixedWord_IsNotTheNewsCommand()
+    [Theory]
+    [InlineData("/newsletter about what?")] // old-name prefix word
+    [InlineData("/ai-newsy question")]      // new-name prefix word
+    public async Task NewsPrefixedWords_AreNotTheNewsCommand(string text)
     {
-        await RunAsync(MessageUpdate(PersonalChatId, UserId, "/newsletter about what?"));
+        await RunAsync(MessageUpdate(PersonalChatId, UserId, text));
 
         await _newsResearch.DidNotReceiveWithAnyArgs().ResearchDailyNewsAsync(default!, default!, default!, default);
+        // No redirect notice either — it goes straight to Q&A
+        await _notifications.DidNotReceive().SendMessageAsync(
+            PersonalChatId, Arg.Is<string>(m => m.Contains("command moved")));
         await _summarizer.Received(1).AnswerPersonalQuestionAsync(
-            "/newsletter about what?",
+            text,
             Arg.Any<List<ProcessedEmailEntity>>(), Arg.Any<List<Event>>(),
             Arg.Any<List<ProcessedEmailEntity>>(), Arg.Any<List<Event>>(),
             Arg.Any<List<ReportedNewsEntity>>(), Arg.Any<List<ChatTurnEntity>>(),
             Arg.Any<Func<string, System.Text.Json.Nodes.JsonNode?, Task<string>>>());
+    }
+
+    [Theory]
+    [InlineData("/news")]
+    [InlineData("/news EU AI Act")]
+    [InlineData("/news@AlfredBot")]
+    public async Task News_OldName_GetsARedirectNoticeInsteadOfResearch(string text)
+    {
+        var status = await RunAsync(MessageUpdate(PersonalChatId, UserId, text));
+
+        Assert.Equal(HttpStatusCode.OK, status);
+        await _notifications.Received(1).SendMessageAsync(
+            PersonalChatId, "That command moved — it's /ai-news now.");
+        // The redirect is a dead end: no research, no marker, no Q&A
+        await _newsResearch.DidNotReceiveWithAnyArgs().ResearchDailyNewsAsync(default!, default!, default!, default);
+        await _state.DidNotReceiveWithAnyArgs().SaveNewsRequestAsync(default!);
+        await _summarizer.DidNotReceiveWithAnyArgs().AnswerPersonalQuestionAsync(
+            default!, default!, default!, default!, default!, default!, default!, default!);
     }
 
     // ---- /joke command ----
@@ -915,6 +942,187 @@ public class TelegramWebhookFunctionTests
         {
             Environment.SetEnvironmentVariable("GitHub__Token", original);
         }
+    }
+
+    // ---- /deploy command ----
+
+    // The GitHub dispatch POST uses a locally constructed HttpClient, so only the paths
+    // short of the network call are coverable — same limitation as /evolve above.
+
+    [Theory]
+    [InlineData("/deploy")]
+    [InlineData("/deploy@AlfredBot")] // bot-mention form routes the same way
+    [InlineData("/DEPLOY")]           // case-insensitive
+    public async Task DeployWithoutGitHubToken_ExplainsTheMissingConfig(string text)
+    {
+        var original = Environment.GetEnvironmentVariable("GitHub__Token");
+        try
+        {
+            Environment.SetEnvironmentVariable("GitHub__Token", null);
+
+            var status = await RunAsync(MessageUpdate(PersonalChatId, UserId, text));
+
+            Assert.Equal(HttpStatusCode.OK, status);
+            await _notifications.Received(1).SendMessageAsync(
+                PersonalChatId, Arg.Is<string>(m => m.Contains("GitHub__Token") && m.Contains("deploy")));
+            // Routed as a command, never as a question
+            await _summarizer.DidNotReceiveWithAnyArgs().AnswerPersonalQuestionAsync(
+                default!, default!, default!, default!, default!, default!, default!, default!);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GitHub__Token", original);
+        }
+    }
+
+    [Fact]
+    public async Task DeployFromTheSchoolChat_IsTreatedAsAnOrdinaryQuestion()
+    {
+        await RunAsync(MessageUpdate(SchoolChatId, UserId, "/deploy"));
+
+        await _summarizer.Received(1).AnswerQuestionAsync(
+            "/deploy", Arg.Any<List<ProcessedEmailEntity>>(), Arg.Any<List<Event>>(), Arg.Any<List<ChatTurnEntity>>());
+        await _notifications.Received(1).SendMessageAsync(SchoolChatId, "school answer");
+    }
+
+    [Fact]
+    public async Task DeployPrefixedWord_IsNotTheDeployCommand()
+    {
+        await RunAsync(MessageUpdate(PersonalChatId, UserId, "/deployment status?"));
+
+        await _summarizer.Received(1).AnswerPersonalQuestionAsync(
+            "/deployment status?",
+            Arg.Any<List<ProcessedEmailEntity>>(), Arg.Any<List<Event>>(),
+            Arg.Any<List<ProcessedEmailEntity>>(), Arg.Any<List<Event>>(),
+            Arg.Any<List<ReportedNewsEntity>>(), Arg.Any<List<ChatTurnEntity>>(),
+            Arg.Any<Func<string, System.Text.Json.Nodes.JsonNode?, Task<string>>>());
+    }
+
+    // ---- GitHub workflow dispatch (via the GitHubHttpFactory seam) ----
+
+    private readonly FakeHttpHandler _gitHubHttp = new();
+
+    private TelegramWebhookFunction CreateFunctionWithGitHubSeam()
+    {
+        var function = CreateFunction();
+        // The handlers dispose the client after each dispatch — hand out a fresh one
+        // per call, all backed by the same recording handler
+        function.GitHubHttpFactory = () => new HttpClient(_gitHubHttp, disposeHandler: false);
+        return function;
+    }
+
+    private static async Task WithGitHubEnvAsync(string? token, string? repo, Func<Task> body)
+    {
+        var originalToken = Environment.GetEnvironmentVariable("GitHub__Token");
+        var originalRepo = Environment.GetEnvironmentVariable("GitHub__Repo");
+        try
+        {
+            Environment.SetEnvironmentVariable("GitHub__Token", token);
+            Environment.SetEnvironmentVariable("GitHub__Repo", repo);
+            await body();
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GitHub__Token", originalToken);
+            Environment.SetEnvironmentVariable("GitHub__Repo", originalRepo);
+        }
+    }
+
+    [Fact]
+    public async Task Deploy_DispatchesTheDeployWorkflowOnMain_AndConfirms()
+    {
+        string? authorization = null, accept = null, userAgent = null;
+        _gitHubHttp.EnqueueResponder(req =>
+        {
+            authorization = req.Headers.Authorization?.ToString();
+            accept = string.Join(",", req.Headers.Accept);
+            userAgent = string.Join(" ", req.Headers.UserAgent);
+            return new HttpResponseMessage(HttpStatusCode.NoContent);
+        });
+
+        await WithGitHubEnvAsync("test-token-123", null, () =>
+            RunAsync(CreateFunctionWithGitHubSeam(), MessageUpdate(PersonalChatId, UserId, "/deploy")));
+
+        var request = Assert.Single(_gitHubHttp.Requests);
+        Assert.Equal(HttpMethod.Post, request.Method);
+        Assert.Equal(
+            "https://api.github.com/repos/scerrimatthew/alfred-pa/actions/workflows/deploy.yml/dispatches",
+            request.Uri.ToString());
+        var payload = JsonDocument.Parse(request.Body!).RootElement;
+        Assert.Equal("main", payload.GetProperty("ref").GetString());
+        Assert.False(payload.TryGetProperty("inputs", out _)); // plain deploy carries no inputs
+
+        Assert.Equal("Bearer test-token-123", authorization);
+        Assert.Contains("application/vnd.github+json", accept);
+        Assert.Contains("Alfred", userAgent);
+
+        await _notifications.Received(1).SendMessageAsync(
+            PersonalChatId, Arg.Is<string>(m => m.Contains("Deploying current main")));
+    }
+
+    [Fact]
+    public async Task Deploy_GitHubRejectsTheDispatch_ReportsTheStatusCode()
+    {
+        _gitHubHttp.EnqueueResponder(_ => new HttpResponseMessage(HttpStatusCode.Forbidden)
+        {
+            Content = new StringContent("""{"message":"nope"}""")
+        });
+
+        await WithGitHubEnvAsync("test-token-123", null, () =>
+            RunAsync(CreateFunctionWithGitHubSeam(), MessageUpdate(PersonalChatId, UserId, "/deploy")));
+
+        await _notifications.Received(1).SendMessageAsync(
+            PersonalChatId, "Couldn't start the deploy — GitHub returned 403.");
+    }
+
+    [Fact]
+    public async Task Deploy_HonorsTheConfiguredRepoOverride()
+    {
+        _gitHubHttp.EnqueueResponder(_ => new HttpResponseMessage(HttpStatusCode.NoContent));
+
+        await WithGitHubEnvAsync("test-token-123", "someone/fork", () =>
+            RunAsync(CreateFunctionWithGitHubSeam(), MessageUpdate(PersonalChatId, UserId, "/deploy")));
+
+        Assert.StartsWith("https://api.github.com/repos/someone/fork/",
+            Assert.Single(_gitHubHttp.Requests).Uri.ToString());
+    }
+
+    [Fact]
+    public async Task Evolve_DispatchesTheInstructionToTheEvolveWorkflow_AndConfirms()
+    {
+        _gitHubHttp.EnqueueResponder(_ => new HttpResponseMessage(HttpStatusCode.NoContent));
+
+        await WithGitHubEnvAsync("test-token-123", null, () =>
+            RunAsync(CreateFunctionWithGitHubSeam(),
+                MessageUpdate(PersonalChatId, UserId, "/evolve make the digest shorter")));
+
+        var request = Assert.Single(_gitHubHttp.Requests);
+        Assert.Equal(HttpMethod.Post, request.Method);
+        Assert.Equal(
+            "https://api.github.com/repos/scerrimatthew/alfred-pa/actions/workflows/evolve.yml/dispatches",
+            request.Uri.ToString());
+        var payload = JsonDocument.Parse(request.Body!).RootElement;
+        Assert.Equal("main", payload.GetProperty("ref").GetString());
+        Assert.Equal("make the digest shorter",
+            payload.GetProperty("inputs").GetProperty("instruction").GetString());
+
+        await _notifications.Received(1).SendMessageAsync(
+            PersonalChatId, Arg.Is<string>(m => m.Contains("started a coding session")));
+    }
+
+    [Fact]
+    public async Task Evolve_GitHubRejectsTheDispatch_ReportsTheStatusCode()
+    {
+        _gitHubHttp.EnqueueResponder(_ => new HttpResponseMessage(HttpStatusCode.InternalServerError)
+        {
+            Content = new StringContent("boom")
+        });
+
+        await WithGitHubEnvAsync("test-token-123", null, () =>
+            RunAsync(CreateFunctionWithGitHubSeam(), MessageUpdate(PersonalChatId, UserId, "/evolve add a pony")));
+
+        await _notifications.Received(1).SendMessageAsync(
+            PersonalChatId, "Couldn't start the coding session — GitHub returned 500.");
     }
 
     // ---- Callback queries (inline buttons) ----

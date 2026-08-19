@@ -146,16 +146,36 @@ public class TelegramWebhookFunction
                 return req.CreateResponse(System.Net.HttpStatusCode.OK);
             }
 
-            // "/news", "/news <topic>", and Telegram's command-menu form "/news@BotName" —
-            // but not /news-prefixed words like "/newsletter"
+            // "/ai-news", "/ai-news <topic>", the underscore form "/ai_news" (the only
+            // shape Telegram's command menu can register — hyphens aren't allowed there),
+            // and "@BotName" mentions — but not prefixed words like "/ai-newsy"
             var newsMatch = System.Text.RegularExpressions.Regex.Match(
                 question.TrimStart(),
-                @"^/news(?:@\S+)?(?:\s+(?<topic>.*))?$",
+                @"^/ai[-_]news(?:@\S+)?(?:\s+(?<topic>.*))?$",
                 System.Text.RegularExpressions.RegexOptions.IgnoreCase
                     | System.Text.RegularExpressions.RegexOptions.Singleline);
             if (isPersonalChat && newsMatch.Success)
             {
                 await HandleNewsCommandAsync(chatId, newsMatch.Groups["topic"].Value.Trim());
+                return req.CreateResponse(System.Net.HttpStatusCode.OK);
+            }
+
+            // The command's old name — redirect instead of dropping into Q&A
+            if (isPersonalChat && System.Text.RegularExpressions.Regex.IsMatch(
+                    question.TrimStart(), @"^/news(?:@\S+)?(?:\s|$)",
+                    System.Text.RegularExpressions.RegexOptions.IgnoreCase
+                        | System.Text.RegularExpressions.RegexOptions.Singleline))
+            {
+                await _notificationService.SendMessageAsync(chatId, "That command moved — it's /ai-news now.");
+                return req.CreateResponse(System.Net.HttpStatusCode.OK);
+            }
+
+            if (isPersonalChat && System.Text.RegularExpressions.Regex.IsMatch(
+                    question.TrimStart(), @"^/deploy(?:@\S+)?(?:\s|$)",
+                    System.Text.RegularExpressions.RegexOptions.IgnoreCase
+                        | System.Text.RegularExpressions.RegexOptions.Singleline))
+            {
+                await HandleDeployCommandAsync(chatId);
                 return req.CreateResponse(System.Net.HttpStatusCode.OK);
             }
 
@@ -644,6 +664,55 @@ public class TelegramWebhookFunction
         }
     }
 
+    // Test seam: when set, supplies the HttpClient for GitHub workflow-dispatch calls
+    // (tests back it with a fake handler). Never set in production.
+    internal Func<HttpClient>? GitHubHttpFactory { get; set; }
+
+    private HttpClient CreateGitHubHttpClient(string token)
+    {
+        var http = GitHubHttpFactory is not null ? GitHubHttpFactory() : new HttpClient();
+        http.DefaultRequestHeaders.UserAgent.ParseAdd("Alfred");
+        http.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token);
+        http.DefaultRequestHeaders.Accept.ParseAdd("application/vnd.github+json");
+        return http;
+    }
+
+    // "/deploy" dispatches the plain deploy workflow — build, coverage gate, then a release
+    // of current main, no coding session. The workflow reports back to Telegram itself.
+    private async Task HandleDeployCommandAsync(long chatId)
+    {
+        var token = Environment.GetEnvironmentVariable("GitHub__Token");
+        var repo = Environment.GetEnvironmentVariable("GitHub__Repo") ?? "scerrimatthew/alfred-pa";
+        if (string.IsNullOrWhiteSpace(token))
+        {
+            await _notificationService.SendMessageAsync(chatId,
+                "The GitHub token (GitHub__Token) isn't configured, so I can't start a deploy.");
+            return;
+        }
+
+        using var http = CreateGitHubHttpClient(token);
+
+        var payload = JsonSerializer.Serialize(new { @ref = "main" });
+        var response = await http.PostAsync(
+            $"https://api.github.com/repos/{repo}/actions/workflows/deploy.yml/dispatches",
+            new StringContent(payload, System.Text.Encoding.UTF8, "application/json"));
+
+        if (response.IsSuccessStatusCode)
+        {
+            _logger.LogInformation("Deploy workflow dispatched");
+            await _notificationService.SendMessageAsync(chatId,
+                "Deploying current main — build and tests first, then the release. "
+                + "I'll report back here when it's done (usually 3-5 minutes).");
+        }
+        else
+        {
+            var body = await response.Content.ReadAsStringAsync();
+            _logger.LogError("Deploy dispatch failed: {Status} {Body}", response.StatusCode, body);
+            await _notificationService.SendMessageAsync(chatId,
+                $"Couldn't start the deploy — GitHub returned {(int)response.StatusCode}.");
+        }
+    }
+
     // "/evolve <instruction>" hands the instruction to a GitHub Actions workflow that runs a
     // headless Claude Code session against this repo, builds, commits, and redeploys
     private async Task HandleEvolveCommandAsync(long chatId, string instruction)
@@ -664,10 +733,7 @@ public class TelegramWebhookFunction
             return;
         }
 
-        using var http = new HttpClient();
-        http.DefaultRequestHeaders.UserAgent.ParseAdd("Alfred");
-        http.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token);
-        http.DefaultRequestHeaders.Accept.ParseAdd("application/vnd.github+json");
+        using var http = CreateGitHubHttpClient(token);
 
         var payload = JsonSerializer.Serialize(new { @ref = "main", inputs = new { instruction } });
         var response = await http.PostAsync(
