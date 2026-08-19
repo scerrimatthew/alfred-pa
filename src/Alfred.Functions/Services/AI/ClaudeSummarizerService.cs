@@ -240,6 +240,8 @@ public class ClaudeSummarizerService : ISummarizerService
             Format your reply using Telegram HTML:
             - Use <b>bold</b> sparingly, for the punchline at most
             - Only use <b> tags
+            - Outside those tags, never use raw <, > or & characters — escape them as
+              &lt; &gt; &amp; (an "R&D" or "x < y" joke fails to send otherwise)
             """;
 
         var userPrompt = $"""

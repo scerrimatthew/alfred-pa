@@ -206,11 +206,16 @@ public class ClaudeSummarizerApiTests
         var body = RequestBody();
         Assert.Equal(Anthropic.SDK.Constants.AnthropicModels.Claude46Opus, body.GetProperty("model").GetString());
         Assert.Equal(512, body.GetProperty("max_tokens").GetInt32());
-        // The contract: one short, clean joke, no preamble
-        var system = body.GetProperty("system").ToString();
+        // The contract: one short, clean joke, no preamble. Read the system text with
+        // GetString() — the SDK unicode-escapes angle brackets and ampersands on the
+        // wire, so the raw JSON text would hide exactly the characters the rule is about
+        var system = body.GetProperty("system")[0].GetProperty("text").GetString()!;
         Assert.Contains("exactly ONE joke", system);
         Assert.Contains("family-friendly", system);
         Assert.Contains("the joke only", system);
+        // HTML-mode safety: an "R&D" or "x < y" joke with raw <, > or & fails to send
+        Assert.Contains("never use raw <, > or & characters", system);
+        Assert.Contains("&lt; &gt; &amp;", system);
     }
 
     [Theory]
