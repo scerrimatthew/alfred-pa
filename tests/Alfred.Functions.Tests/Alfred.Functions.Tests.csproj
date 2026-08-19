@@ -11,7 +11,7 @@
        the threshold may be raised, never lowered, and these filters never loosened,
        except on Matthew's explicit instruction. -->
   <PropertyGroup Condition="'$(CollectCoverage)' == 'true'">
-    <Threshold>60</Threshold>
+    <Threshold>70</Threshold>
     <ThresholdType>line</ThresholdType>
     <ThresholdStat>total</ThresholdStat>
     <Include>[Alfred.Functions]*</Include>
