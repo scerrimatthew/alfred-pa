@@ -250,13 +250,15 @@ public class TelegramWebhookFunction
         {
             _logger.LogError(ex, "Error processing Telegram webhook");
 
-            // Silence is the worst failure mode — best-effort apology when the chat is known
+            // Silence is the worst failure mode — best-effort apology when the chat is
+            // known, carrying a short error signature so failures diagnose themselves in
+            // chat (Application Insights isn't reachable from everywhere Matthew debugs)
             if (replyChatId != 0)
             {
                 try
                 {
                     await _notificationService.SendMessageAsync(replyChatId,
-                        "Something went wrong on my end while handling that — try again in a moment.");
+                        $"Something went wrong on my end while handling that — try again in a moment. ({ErrorSignature(ex)})");
                 }
                 catch (Exception sendEx)
                 {
@@ -1044,6 +1046,20 @@ public class TelegramWebhookFunction
             default:
                 return $"Error: unknown tool {toolName}.";
         }
+    }
+
+    // Exception type + terse message, HTML-escaped and capped, for the in-chat apology
+    internal static string ErrorSignature(Exception ex)
+    {
+        var message = ex.Message;
+        if (message.Length > 200)
+        {
+            // Don't cut through a surrogate pair — a lone surrogate would make Telegram
+            // reject the apology itself, degrading back to silence
+            var cut = char.IsHighSurrogate(message[199]) ? 199 : 200;
+            message = message[..cut] + "…";
+        }
+        return System.Net.WebUtility.HtmlEncode($"{ex.GetType().Name}: {message}");
     }
 
     // History keeps a de-formatted, capped copy of each answer: enough for follow-ups,

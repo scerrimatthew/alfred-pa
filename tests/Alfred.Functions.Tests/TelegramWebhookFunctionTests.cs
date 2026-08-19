@@ -335,7 +335,7 @@ public class TelegramWebhookFunctionTests
     // ---- Outer-catch apology (silence is the worst failure mode) ----
 
     [Fact]
-    public async Task FailureAfterAnAuthorizedSenderIsKnown_SendsAnApologyToThatChat()
+    public async Task FailureAfterAnAuthorizedSenderIsKnown_SendsAnApologyCarryingTheDiagnosticSignature()
     {
         _summarizer.AnswerQuestionAsync(Arg.Any<string>(), Arg.Any<List<ProcessedEmailEntity>>(), Arg.Any<List<Event>>(), Arg.Any<List<ChatTurnEntity>>())
             .ThrowsAsync(new InvalidOperationException("model down"));
@@ -343,8 +343,26 @@ public class TelegramWebhookFunctionTests
         var status = await RunAsync(MessageUpdate(SchoolChatId, UserId, "what's on?"));
 
         Assert.Equal(HttpStatusCode.OK, status);
+        // The signature makes production failures debuggable from the chat itself
         await _notifications.Received(1).SendMessageAsync(SchoolChatId,
-            "Something went wrong on my end while handling that — try again in a moment.");
+            "Something went wrong on my end while handling that — try again in a moment. (InvalidOperationException: model down)");
+    }
+
+    [Fact]
+    public async Task ApologySignature_WithHtmlCharactersInTheMessage_ArrivesEncoded()
+    {
+        // The apology goes out in HTML mode — a raw < > & in an exception message
+        // would make the apology itself fail to send
+        _summarizer.AnswerQuestionAsync(Arg.Any<string>(), Arg.Any<List<ProcessedEmailEntity>>(), Arg.Any<List<Event>>(), Arg.Any<List<ChatTurnEntity>>())
+            .ThrowsAsync(new InvalidOperationException("expected <b> tag & got > instead"));
+
+        await RunAsync(MessageUpdate(SchoolChatId, UserId, "q"));
+
+        await _notifications.Received(1).SendMessageAsync(SchoolChatId,
+            Arg.Is<string>(m =>
+                m.StartsWith("Something went wrong on my end while handling that — try again in a moment. (")
+                && m.Contains("expected &lt;b&gt; tag &amp; got &gt; instead")
+                && !m.Contains("<b>")));
     }
 
     [Fact]
@@ -382,6 +400,40 @@ public class TelegramWebhookFunctionTests
 
         Assert.Equal(HttpStatusCode.OK, status);
         await _notifications.DidNotReceiveWithAnyArgs().SendMessageAsync(default, default!);
+    }
+
+    [Fact]
+    public void ErrorSignature_IsTypeNameColonMessage()
+    {
+        Assert.Equal("TimeoutException: tables down",
+            TelegramWebhookFunction.ErrorSignature(new TimeoutException("tables down")));
+    }
+
+    [Fact]
+    public void ErrorSignature_HtmlEncodesTheWholeSignature()
+    {
+        Assert.Equal("InvalidOperationException: &lt;b&gt; &amp; friends",
+            TelegramWebhookFunction.ErrorSignature(new InvalidOperationException("<b> & friends")));
+    }
+
+    [Fact]
+    public void ErrorSignature_CapsTheMessageAtTwoHundredChars()
+    {
+        var signature = TelegramWebhookFunction.ErrorSignature(new InvalidOperationException(new string('a', 250)));
+
+        Assert.Equal("InvalidOperationException: " + new string('a', 200) + "…", signature);
+    }
+
+    [Fact]
+    public void ErrorSignature_CapsBeforeEncoding_SoEntitiesNeverEatTheBudget()
+    {
+        // 250 raw '<' chars: capped to 200 FIRST, then each becomes a four-char entity —
+        // if the cap ran after encoding instead, only 50 of them would survive
+        var signature = TelegramWebhookFunction.ErrorSignature(new InvalidOperationException(new string('<', 250)));
+
+        Assert.Equal(
+            "InvalidOperationException: " + string.Concat(Enumerable.Repeat("&lt;", 200)) + "…",
+            signature);
     }
 
     // ---- /backfill command ----
