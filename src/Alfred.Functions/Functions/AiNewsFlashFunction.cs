@@ -54,6 +54,13 @@ public class AiNewsFlashFunction
 
             var flash = await _newsResearch.CheckUrgentNewsAsync(rules, recentlyReported);
 
+            if (flash.Incomplete)
+            {
+                // Best-effort check — a cut-off run just waits for the evening digest
+                _logger.LogWarning("Midday flash check was cut off before finishing");
+                return;
+            }
+
             if (flash.Items.Count == 0 || string.IsNullOrWhiteSpace(flash.TelegramMessage))
             {
                 _logger.LogInformation("Midday flash check found nothing urgent (the normal outcome)");

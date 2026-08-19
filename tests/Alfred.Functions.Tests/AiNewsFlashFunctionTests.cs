@@ -130,6 +130,20 @@ public class AiNewsFlashFunctionTests
     }
 
     [Fact]
+    public async Task CutOffRun_StaysCompletelySilent_TheEveningDigestCoversIt()
+    {
+        // Unlike the evening digest, a cut-off midday spot check warrants no ping at all
+        _research.CheckUrgentNewsAsync(Arg.Any<List<NewsRuleEntity>>(), Arg.Any<List<ReportedNewsEntity>>())
+            .Returns(new AiNewsDigest { Incomplete = true });
+
+        await CreateFunction().Run(Timer);
+
+        await _notifications.DidNotReceiveWithAnyArgs().SendPersonalAlertAsync(default!);
+        await _notifications.DidNotReceiveWithAnyArgs().SendPersonalErrorAsync(default!);
+        await _state.DidNotReceiveWithAnyArgs().SaveReportedNewsAsync(default!);
+    }
+
+    [Fact]
     public async Task ResearchFailure_IsReportedToThePersonalChat()
     {
         _research.CheckUrgentNewsAsync(Arg.Any<List<NewsRuleEntity>>(), Arg.Any<List<ReportedNewsEntity>>())

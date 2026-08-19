@@ -1,0 +1,55 @@
+name: deploy
+
+# Plain deploy of current main — no coding session, unlike evolve.yml.
+# Trigger it from the Actions tab when a pushed change needs to go live.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# One deploy at a time; never cancel a deploy mid-flight
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: Build
+        run: |
+          dotnet build Alfred.sln -warnaserror
+          dotnet publish src/Alfred.Functions/Alfred.Functions.csproj -c Release -o ./publish_output
+
+      - name: Test (coverage gate)
+        run: dotnet test tests/Alfred.Functions.Tests/Alfred.Functions.Tests.csproj -warnaserror /p:CollectCoverage=true
+
+      - name: Deploy to Azure Functions
+        uses: Azure/functions-action@v1
+        with:
+          app-name: func-matt-scerri-alfred-prod-westeu-001
+          package: ./publish_output
+          publish-profile: ${{ secrets.AZURE_FUNCTIONAPP_PUBLISH_PROFILE }}
+
+      - name: Notify Telegram (success)
+        if: success()
+        run: |
+          COMMIT=$(git rev-parse --short HEAD)
+          SUBJECT=$(git log -1 --format=%s)
+          curl -s "https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/sendMessage" \
+            -d chat_id="${{ secrets.TELEGRAM_CHAT_ID }}" \
+            --data-urlencode text="Deployed ${COMMIT}: ${SUBJECT}"
+
+      - name: Notify Telegram (failure)
+        if: failure()
+        run: |
+          curl -s "https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/sendMessage" \
+            -d chat_id="${{ secrets.TELEGRAM_CHAT_ID }}" \
+            --data-urlencode text="Deploy failed — nothing was deployed. Check the GitHub Actions log."

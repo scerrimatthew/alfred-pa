@@ -332,6 +332,58 @@ public class TelegramWebhookFunctionTests
         await _summarizer.DidNotReceiveWithAnyArgs().AnswerQuestionAsync(default!, default!, default!, default!);
     }
 
+    // ---- Outer-catch apology (silence is the worst failure mode) ----
+
+    [Fact]
+    public async Task FailureAfterAnAuthorizedSenderIsKnown_SendsAnApologyToThatChat()
+    {
+        _summarizer.AnswerQuestionAsync(Arg.Any<string>(), Arg.Any<List<ProcessedEmailEntity>>(), Arg.Any<List<Event>>(), Arg.Any<List<ChatTurnEntity>>())
+            .ThrowsAsync(new InvalidOperationException("model down"));
+
+        var status = await RunAsync(MessageUpdate(SchoolChatId, UserId, "what's on?"));
+
+        Assert.Equal(HttpStatusCode.OK, status);
+        await _notifications.Received(1).SendMessageAsync(SchoolChatId,
+            "Something went wrong on my end while handling that — try again in a moment.");
+    }
+
+    [Fact]
+    public async Task ApologySendFailingToo_IsSwallowed_TelegramStillGets200()
+    {
+        _summarizer.AnswerQuestionAsync(Arg.Any<string>(), Arg.Any<List<ProcessedEmailEntity>>(), Arg.Any<List<Event>>(), Arg.Any<List<ChatTurnEntity>>())
+            .ThrowsAsync(new InvalidOperationException("model down"));
+        _notifications.SendMessageAsync(Arg.Any<long>(), Arg.Any<string>())
+            .ThrowsAsync(new HttpRequestException("telegram down"));
+
+        var status = await RunAsync(MessageUpdate(SchoolChatId, UserId, "q"));
+
+        Assert.Equal(HttpStatusCode.OK, status); // never bounce the webhook into Telegram retries
+    }
+
+    [Fact]
+    public async Task FailureOnTheCallbackPath_StaysSilent_NoChatWasIdentifiedForAReply()
+    {
+        // The callback handler's own error answer is the last resort there — when even
+        // that throws, the outer catch must not message anyone
+        _gmail.MarkAsUnreadAsync("m1").ThrowsAsync(new HttpRequestException("gmail down"));
+        _notifications.AnswerCallbackAsync(Arg.Any<string>(), Arg.Any<string?>())
+            .ThrowsAsync(new HttpRequestException("telegram down"));
+
+        var status = await RunAsync(CallbackUpdate("cb1", UserId, "mu:m1"));
+
+        Assert.Equal(HttpStatusCode.OK, status);
+        await _notifications.DidNotReceiveWithAnyArgs().SendMessageAsync(default, default!);
+    }
+
+    [Fact]
+    public async Task FailureBeforeAuth_UnparseableBody_NeverApologizes()
+    {
+        var status = await RunAsync("{\"update_id\": \"not a number\"}"); // GetInt64 throws
+
+        Assert.Equal(HttpStatusCode.OK, status);
+        await _notifications.DidNotReceiveWithAnyArgs().SendMessageAsync(default, default!);
+    }
+
     // ---- /backfill command ----
 
     [Fact]
@@ -507,8 +559,11 @@ public class TelegramWebhookFunctionTests
     }
 
     [Fact]
-    public async Task News_WhileARunIsInFlight_IsDroppedCompletelySilently()
+    public async Task News_WhileARunIsInFlight_SaysStillWorkingInsteadOfResearchingAgain()
     {
+        // A true Telegram redelivery is already dropped upstream by the update_id claim,
+        // so reaching here means Matthew asked again mid-run — he gets an answer with the
+        // elapsed time, not silence
         _newsMarker = new NewsRequestStateEntity
         {
             RequestedAt = DateTimeOffset.UtcNow.AddMinutes(-5)
@@ -517,12 +572,48 @@ public class TelegramWebhookFunctionTests
         var status = await RunAsync(MessageUpdate(PersonalChatId, UserId, "/news"));
 
         Assert.Equal(HttpStatusCode.OK, status);
-        // A silent drop: no ack, no research, no new marker — and the in-flight
-        // run's own finally must not be preempted by clearing its marker here
-        await _notifications.DidNotReceiveWithAnyArgs().SendMessageAsync(default, default!);
+        await _notifications.Received(1).SendMessageAsync(
+            PersonalChatId,
+            Arg.Is<string>(m => m.Contains("Still working on the previous sweep") && m.Contains("5 min ago")));
+        // No second research run, no new marker — and the in-flight run's own finally
+        // must not be preempted by clearing its marker here
         await _newsResearch.DidNotReceiveWithAnyArgs().ResearchDailyNewsAsync(default!, default!, default!, default);
         await _state.DidNotReceiveWithAnyArgs().SaveNewsRequestAsync(default!);
         await _state.DidNotReceive().ClearNewsRequestAsync();
+    }
+
+    [Fact]
+    public async Task News_MarkerSecondsOld_ReportsAtLeastOneMinute()
+    {
+        // "started about 0 min ago" would read like a bug — the floor is one minute
+        _newsMarker = new NewsRequestStateEntity { RequestedAt = DateTimeOffset.UtcNow };
+
+        await RunAsync(MessageUpdate(PersonalChatId, UserId, "/news"));
+
+        await _notifications.Received(1).SendMessageAsync(
+            PersonalChatId, Arg.Is<string>(m => m.Contains("about 1 min ago")));
+    }
+
+    [Fact]
+    public async Task News_ResearchCutOff_TellsMatthewAndStillClearsTheMarker()
+    {
+        _newsResearch.ResearchDailyNewsAsync(
+                Arg.Any<List<NewsRuleEntity>>(), Arg.Any<List<ReportedNewsEntity>>(),
+                Arg.Any<List<NewsCandidateEntity>>(), Arg.Any<string?>())
+            .Returns(new AiNewsDigest { Incomplete = true });
+
+        var status = await RunAsync(MessageUpdate(PersonalChatId, UserId, "/news"));
+
+        Assert.Equal(HttpStatusCode.OK, status);
+        // Told apart from a quiet day: a cut-off run apologizes instead of "nothing new"
+        await _notifications.Received(1).SendMessageAsync(
+            PersonalChatId, Arg.Is<string>(m => m.Contains("ran long") && m.Contains("cut it off")));
+        await _notifications.DidNotReceive().SendMessageAsync(
+            PersonalChatId, Arg.Is<string>(m => m.Contains("Nothing new")));
+        await _notifications.DidNotReceiveWithAnyArgs().SendPersonalAlertAsync(default!);
+        await _state.DidNotReceiveWithAnyArgs().SaveReportedNewsAsync(default!);
+        // The finally still cleans up its own marker so the next /news isn't locked out
+        await _state.Received(1).ClearNewsRequestAsync();
     }
 
     [Fact]

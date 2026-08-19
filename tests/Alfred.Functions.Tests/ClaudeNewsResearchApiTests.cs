@@ -81,6 +81,7 @@ public class ClaudeNewsResearchApiTests
         var digest = await _service.ResearchDailyNewsAsync([], [], []);
 
         Assert.Equal("🗞 Evening!", digest.TelegramMessage);
+        Assert.False(digest.Incomplete); // a completed run is never flagged cut-off
         var item = Assert.Single(digest.Items);
         Assert.Equal("DORA 2026 lands", item.Headline);
         Assert.Equal("https://dora.dev/2026", item.Url);
@@ -171,7 +172,7 @@ public class ClaudeNewsResearchApiTests
     }
 
     [Fact]
-    public async Task PauseTurn_ThatNeverCompletes_GivesUpAfterFiveResumes()
+    public async Task PauseTurn_ThatNeverCompletes_GivesUpAfterFiveResumes_FlaggedIncomplete()
     {
         _http.Route("POST /v1/messages", PausedSearchResponse);
 
@@ -180,12 +181,37 @@ public class ClaudeNewsResearchApiTests
         Assert.Equal(6, _http.Requests.Count); // the initial call + 5 resumes
         Assert.Empty(digest.Items);
         Assert.Null(digest.TelegramMessage);
+        // A give-up is not a quiet news day — callers must be able to tell the difference
+        Assert.True(digest.Incomplete);
 
         // Every resume accumulates another full paused turn: by the last request all
         // five assistant turns ride along with their search blocks intact
         var finalMessages = RequestBody(5).GetProperty("messages");
         Assert.Equal(6, finalMessages.GetArrayLength());
         Assert.Contains("ENC123", finalMessages[5].ToString(), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task BudgetCancellation_YieldsAnIncompleteDigestInsteadOfThrowing()
+    {
+        // The wall-clock budget firing surfaces as an OperationCanceledException from
+        // the HTTP layer — simulated directly, no waiting involved
+        _http.RouteResponder("POST /v1/messages", _ => throw new TaskCanceledException("simulated budget cut-off"));
+
+        var digest = await _service.ResearchDailyNewsAsync([], [], []);
+
+        Assert.True(digest.Incomplete);
+        Assert.Empty(digest.Items);
+        Assert.Null(digest.TelegramMessage);
+    }
+
+    [Fact]
+    public void ResearchBudget_LeavesMarginUnderAzuresTenMinuteHardKill()
+    {
+        // Azure kills the invocation at 10 minutes with no catch block — the run must
+        // cut itself off early enough to parse, apologize, and clean up
+        Assert.True(ClaudeNewsResearchService.ResearchBudget <= TimeSpan.FromMinutes(9),
+            "the research budget must leave at least a minute of margin before Azure's functionTimeout");
     }
 
     [Fact]
@@ -231,10 +257,23 @@ public class ClaudeNewsResearchApiTests
         var flash = await _service.CheckUrgentNewsAsync([], []);
 
         Assert.Empty(flash.Items);
+        Assert.False(flash.Incomplete); // resumed and finished — a genuinely quiet check
         Assert.Equal(2, _http.Requests.Count);
         var resumedTurn = RequestBody(1).GetProperty("messages")[1].ToString();
         Assert.Contains("server_tool_use", resumedTurn, StringComparison.Ordinal);
         Assert.Contains("ENC123", resumedTurn, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task FlashCheck_GiveUpPath_IsAlsoFlaggedIncomplete()
+    {
+        _http.Route("POST /v1/messages", PausedSearchResponse);
+
+        var flash = await _service.CheckUrgentNewsAsync([], []);
+
+        Assert.Equal(6, _http.Requests.Count); // same resume cap as the daily run
+        Assert.True(flash.Incomplete);
+        Assert.Empty(flash.Items);
     }
 
     // ---- Weekly synthesis ----

@@ -6,6 +6,11 @@ public class AiNewsDigest
 {
     public string? TelegramMessage { get; set; }
     public List<AiNewsItem> Items { get; set; } = [];
+
+    // True when the research run was cut off (wall-clock budget spent, or the server kept
+    // pausing past the resume cap) — an empty digest then means "couldn't finish", which
+    // callers must report differently from a genuinely quiet news day
+    public bool Incomplete { get; set; }
 }
 
 public class AiNewsItem

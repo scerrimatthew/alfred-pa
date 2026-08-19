@@ -66,6 +66,9 @@ public class TelegramWebhookFunction
         if (string.IsNullOrEmpty(body))
             return req.CreateResponse(System.Net.HttpStatusCode.OK);
 
+        // Set once an authorized message sender is known, so the outer catch can apologize
+        long replyChatId = 0;
+
         try
         {
             using var doc = JsonDocument.Parse(body);
@@ -124,6 +127,7 @@ public class TelegramWebhookFunction
                 return req.CreateResponse(System.Net.HttpStatusCode.OK);
             }
 
+            replyChatId = chatId;
             _logger.LogInformation("Received question from user {UserId} in chat {ChatId}: {Question}", userId, chatId, question);
 
             // The personal DM gets personal context and email tools on top of the school context;
@@ -225,6 +229,20 @@ public class TelegramWebhookFunction
         catch (Exception ex)
         {
             _logger.LogError(ex, "Error processing Telegram webhook");
+
+            // Silence is the worst failure mode — best-effort apology when the chat is known
+            if (replyChatId != 0)
+            {
+                try
+                {
+                    await _notificationService.SendMessageAsync(replyChatId,
+                        "Something went wrong on my end while handling that — try again in a moment.");
+                }
+                catch (Exception sendEx)
+                {
+                    _logger.LogWarning(sendEx, "Failed to send error apology to chat {ChatId}", replyChatId);
+                }
+            }
         }
 
         // Always return 200 to Telegram to prevent retries
@@ -496,7 +514,12 @@ public class TelegramWebhookFunction
         var existing = await _stateService.GetNewsRequestAsync();
         if (existing is not null && existing.RequestedAt > DateTimeOffset.UtcNow - NewsRequestTimeout)
         {
-            _logger.LogInformation("Ignoring /news — a research run started at {Time} is still in flight", existing.RequestedAt);
+            // Redeliveries of the same update were already dropped by the update-id claim,
+            // so this is Matthew asking again mid-run — tell him, don't leave him hanging
+            _logger.LogInformation("A /news research run started at {Time} is still in flight", existing.RequestedAt);
+            var minutes = Math.Max(1, (int)(DateTimeOffset.UtcNow - existing.RequestedAt).TotalMinutes);
+            await _notificationService.SendMessageAsync(chatId,
+                $"Still working on the previous sweep (started about {minutes} min ago) — I'll send it as soon as it lands.");
             return;
         }
 
@@ -525,6 +548,13 @@ public class TelegramWebhookFunction
             var digest = await _newsResearch.ResearchDailyNewsAsync(
                 rules, recentlyReported, candidates,
                 string.IsNullOrWhiteSpace(topic) ? null : topic);
+
+            if (digest.Incomplete)
+            {
+                await _notificationService.SendMessageAsync(chatId,
+                    "The sweep ran long and I had to cut it off before it finished — try again in a few minutes.");
+                return;
+            }
 
             if (digest.Items.Count == 0 || string.IsNullOrWhiteSpace(digest.TelegramMessage))
             {

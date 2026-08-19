@@ -8,6 +8,16 @@ namespace Alfred.Functions.Services.AI;
 
 public class ClaudeSummarizerService : ISummarizerService
 {
+    // Wall-clock budget for the personal Q&A tool loop. Web-search turns can run long,
+    // and Azure kills the invocation hard at the 10-minute functionTimeout — the loop
+    // must cut itself off with margin to still send an apology.
+    internal static readonly TimeSpan PersonalAnswerBudget = TimeSpan.FromMinutes(8);
+
+    // The SDK's default HttpClient times out at 100 seconds — too tight for web-search
+    // turns. Shared instance (the service is a singleton, clients are never disposed);
+    // the per-question cancellation token is what actually governs.
+    private static readonly HttpClient LongRunHttpClient = new() { Timeout = TimeSpan.FromMinutes(9) };
+
     private readonly ILogger<ClaudeSummarizerService> _logger;
 
     public ClaudeSummarizerService(ILogger<ClaudeSummarizerService> logger)
@@ -360,7 +370,7 @@ public class ClaudeSummarizerService : ISummarizerService
         List<ChatTurnEntity> recentTurns,
         Func<string, System.Text.Json.Nodes.JsonNode?, Task<string>> executeTool)
     {
-        var client = CreateClient();
+        var client = CreateLongRunClient();
 
         var today = DateTime.Now.ToString("dddd, d MMMM yyyy");
 
@@ -790,56 +800,65 @@ public class ClaudeSummarizerService : ISummarizerService
             Tools = tools
         };
 
-        // Enough room for a search -> refine -> read -> act -> answer chain
-        for (var iteration = 0; iteration < 10; iteration++)
+        using var budget = new CancellationTokenSource(PersonalAnswerBudget);
+        try
         {
-            var response = await client.Messages.GetClaudeMessageAsync(parameters);
-
-            if (response.StopReason == "pause_turn")
+            // Enough room for a search -> refine -> read -> act -> answer chain
+            for (var iteration = 0; iteration < 10; iteration++)
             {
-                // Server-side web search paused mid-turn — append the FULL partial content
-                // (server_tool_use / result blocks included; response.Message would strip
-                // them and restart the search) and re-send so the server resumes
+                var response = await client.Messages.GetClaudeMessageAsync(parameters, budget.Token);
+
+                if (response.StopReason == "pause_turn")
+                {
+                    // Server-side web search paused mid-turn — append the FULL partial content
+                    // (server_tool_use / result blocks included; response.Message would strip
+                    // them and restart the search) and re-send so the server resumes
+                    messages.Add(new Message { Role = RoleType.Assistant, Content = response.Content });
+                    continue;
+                }
+
+                var toolUses = response.Content?.OfType<ToolUseContent>().ToList() ?? [];
+                if (toolUses.Count == 0)
+                {
+                    // With server tools in play the answer is the LAST text block — earlier
+                    // ones are search narration interleaved with result blocks
+                    return response.Content?.OfType<TextContent>().LastOrDefault()?.Text
+                        ?? "Sorry, I couldn't generate an answer. Please try again.";
+                }
+
+                // Full content, not response.Message — a turn can mix web-search blocks with
+                // client tool calls, and the stripped copy would corrupt the conversation
                 messages.Add(new Message { Role = RoleType.Assistant, Content = response.Content });
-                continue;
-            }
 
-            var toolUses = response.Content?.OfType<ToolUseContent>().ToList() ?? [];
-            if (toolUses.Count == 0)
-            {
-                // With server tools in play the answer is the LAST text block — earlier
-                // ones are search narration interleaved with result blocks
-                return response.Content?.OfType<TextContent>().LastOrDefault()?.Text
-                    ?? "Sorry, I couldn't generate an answer. Please try again.";
-            }
-
-            // Full content, not response.Message — a turn can mix web-search blocks with
-            // client tool calls, and the stripped copy would corrupt the conversation
-            messages.Add(new Message { Role = RoleType.Assistant, Content = response.Content });
-
-            foreach (var toolUse in toolUses)
-            {
-                string result;
-                try
+                foreach (var toolUse in toolUses)
                 {
-                    result = await executeTool(toolUse.Name, toolUse.Input);
-                }
-                catch (Exception ex)
-                {
-                    _logger.LogError(ex, "Tool {Tool} failed", toolUse.Name);
-                    result = $"Error: {ex.Message}";
-                }
-
-                messages.Add(new Message
-                {
-                    Role = RoleType.User,
-                    Content = [new ToolResultContent
+                    string result;
+                    try
                     {
-                        ToolUseId = toolUse.Id,
-                        Content = [new TextContent { Text = result }]
-                    }]
-                });
+                        result = await executeTool(toolUse.Name, toolUse.Input);
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogError(ex, "Tool {Tool} failed", toolUse.Name);
+                        result = $"Error: {ex.Message}";
+                    }
+
+                    messages.Add(new Message
+                    {
+                        Role = RoleType.User,
+                        Content = [new ToolResultContent
+                        {
+                            ToolUseId = toolUse.Id,
+                            Content = [new TextContent { Text = result }]
+                        }]
+                    });
+                }
             }
+        }
+        catch (OperationCanceledException)
+        {
+            _logger.LogWarning("Personal Q&A exceeded its {Budget}-minute budget — cut off", PersonalAnswerBudget.TotalMinutes);
+            return "That's taking me longer than I can manage in one go — ask me again in a moment and I'll pick it up fresh.";
         }
 
         return "I tried to help but got stuck in a loop of actions — please check Gmail directly.";
@@ -875,6 +894,19 @@ public class ClaudeSummarizerService : ISummarizerService
             ?? throw new InvalidOperationException("Anthropic API key not configured");
 
         return new AnthropicClient(apiKey);
+    }
+
+    // For the web-search-capable Q&A only: same client, longer HTTP timeout. The other
+    // methods are single short calls where the SDK's 100-second default is a feature —
+    // a hung triage call should fail fast, not stall the monitor for minutes.
+    private AnthropicClient CreateLongRunClient()
+    {
+        if (ClientFactory is not null) return ClientFactory();
+
+        var apiKey = Environment.GetEnvironmentVariable("Anthropic__ApiKey")
+            ?? throw new InvalidOperationException("Anthropic API key not configured");
+
+        return new AnthropicClient(apiKey, LongRunHttpClient);
     }
 
     internal static string BuildSummarizePrompt(SchoolEmail email, string today, string documentContent, string linksContent)

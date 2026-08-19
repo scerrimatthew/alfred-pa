@@ -156,6 +156,23 @@ public class AiNewsDigestFunctionTests
     }
 
     [Fact]
+    public async Task CutOffRun_PingsTheErrorChannel_NeverPassedOffAsAQuietDay()
+    {
+        // Incomplete comes back with zero items — if the quiet-day skip ran first,
+        // tonight's silent death would repeat. The cut-off check must win.
+        _research.ResearchDailyNewsAsync(
+                Arg.Any<List<NewsRuleEntity>>(), Arg.Any<List<ReportedNewsEntity>>(), Arg.Any<List<NewsCandidateEntity>>())
+            .Returns(new AiNewsDigest { Incomplete = true });
+
+        await CreateFunction().Run(Timer);
+
+        await _notifications.Received(1).SendPersonalErrorAsync(
+            Arg.Is<string>(m => m.Contains("ran out of time") && m.Contains("skipping today")));
+        await _notifications.DidNotReceiveWithAnyArgs().SendPersonalAlertAsync(default!);
+        await _state.DidNotReceiveWithAnyArgs().SaveReportedNewsAsync(default!);
+    }
+
+    [Fact]
     public async Task ResearchFailure_IsReportedToThePersonalChat()
     {
         _research.ResearchDailyNewsAsync(

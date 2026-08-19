@@ -59,6 +59,15 @@ public class AiNewsDigestFunction
 
             var digest = await _newsResearch.ResearchDailyNewsAsync(rules, recentlyReported, candidates);
 
+            if (digest.Incomplete)
+            {
+                // Not a quiet day — the run was cut off. Say so instead of silently skipping.
+                _logger.LogWarning("AI news research was cut off before finishing — no digest today");
+                await _notificationService.SendPersonalErrorAsync(
+                    "AI news digest ran out of time before finishing — skipping today.");
+                return;
+            }
+
             if (digest.Items.Count == 0 || string.IsNullOrWhiteSpace(digest.TelegramMessage))
             {
                 _logger.LogInformation("No AI news cleared the relevance bar today, skipping digest");

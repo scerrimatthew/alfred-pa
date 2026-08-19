@@ -475,6 +475,32 @@ public class ClaudeSummarizerApiTests
     }
 
     [Fact]
+    public async Task AnswerPersonalQuestion_BudgetCancellation_ApologizesInsteadOfThrowing()
+    {
+        // The wall-clock budget firing surfaces as an OperationCanceledException from
+        // the HTTP layer — simulated directly, no waiting involved. The webhook then
+        // relays this text to Matthew instead of dying silently.
+        _http.RouteResponder("POST /v1/messages", _ => throw new TaskCanceledException("simulated budget cut-off"));
+
+        var answer = await _service.AnswerPersonalQuestionAsync(
+            "big question", [], [], [], [], [], [],
+            (_, _) => Task.FromResult(""));
+
+        Assert.Equal(
+            "That's taking me longer than I can manage in one go — ask me again in a moment and I'll pick it up fresh.",
+            answer);
+    }
+
+    [Fact]
+    public void PersonalAnswerBudget_LeavesMarginUnderAzuresTenMinuteHardKill()
+    {
+        // Azure kills the invocation at 10 minutes with no catch block — the loop must
+        // cut itself off early enough to still send the apology above
+        Assert.True(ClaudeSummarizerService.PersonalAnswerBudget <= TimeSpan.FromMinutes(9),
+            "the Q&A budget must leave at least a minute of margin before Azure's functionTimeout");
+    }
+
+    [Fact]
     public async Task AnswerPersonalQuestion_ContextRowsCarryIdsLinksAndFlags()
     {
         _http.EnqueueJson(TextResponse("ok"));

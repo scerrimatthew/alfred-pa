@@ -14,6 +14,17 @@ public class ClaudeNewsResearchService : INewsResearchService
     // re-send resumes it. This caps how many resumes one research run will spend.
     private const int MaxPauseTurnResumes = 5;
 
+    // Wall-clock budget for a whole research run. Azure kills the invocation hard at the
+    // 10-minute functionTimeout — past that no catch block runs and the caller can't even
+    // apologize — so the run must cut itself off with margin to parse, send, and clean up.
+    internal static readonly TimeSpan ResearchBudget = TimeSpan.FromMinutes(7.5);
+
+    // The SDK's default HttpClient times out at 100 seconds — an opus + multi-search
+    // request routinely runs longer. One shared client (the service is a singleton and
+    // the AnthropicClient is never disposed) with a ceiling above the research budget,
+    // so the per-run cancellation token is what actually governs.
+    private static readonly HttpClient LongRunHttpClient = new() { Timeout = TimeSpan.FromMinutes(9) };
+
     private readonly ILogger<ClaudeNewsResearchService> _logger;
     private readonly AlfredOptions _options;
 
@@ -34,7 +45,7 @@ public class ClaudeNewsResearchService : INewsResearchService
             today, rules, recentlyReported, newsletterCandidates, Math.Max(1, _options.AiNewsMaxItems), topic);
 
         var responseText = await RunResearchAsync(systemPrompt, userPrompt, maxSearches: 12, "daily digest");
-        return responseText is null ? new AiNewsDigest() : ParseNewsResponse(responseText);
+        return responseText is null ? new AiNewsDigest { Incomplete = true } : ParseNewsResponse(responseText);
     }
 
     public async Task<AiNewsDigest> CheckUrgentNewsAsync(
@@ -45,7 +56,7 @@ public class ClaudeNewsResearchService : INewsResearchService
         var (systemPrompt, userPrompt) = BuildFlashPrompt(today, rules, recentlyReported);
 
         var responseText = await RunResearchAsync(systemPrompt, userPrompt, maxSearches: 6, "midday flash check");
-        return responseText is null ? new AiNewsDigest() : ParseNewsResponse(responseText);
+        return responseText is null ? new AiNewsDigest { Incomplete = true } : ParseNewsResponse(responseText);
     }
 
     public async Task<string?> BuildWeeklySynthesisAsync(
@@ -73,7 +84,8 @@ public class ClaudeNewsResearchService : INewsResearchService
     }
 
     // Runs one web-search research conversation to completion, resuming pause_turn stops.
-    // Returns the final text answer, or null when the run never completed.
+    // Returns the final text answer, or null when the run never completed (budget spent
+    // or resume cap hit) — the caller reports that as an incomplete run, not a quiet day.
     private async Task<string?> RunResearchAsync(string systemPrompt, string userPrompt, int maxSearches, string runLabel)
     {
         var client = CreateClient();
@@ -90,29 +102,39 @@ public class ClaudeNewsResearchService : INewsResearchService
             Tools = [ServerTools.GetWebSearchTool(maxUses: maxSearches)]
         };
 
-        for (var attempt = 0; attempt <= MaxPauseTurnResumes; attempt++)
+        using var budget = new CancellationTokenSource(ResearchBudget);
+        try
         {
-            var response = await client.Messages.GetClaudeMessageAsync(parameters);
-
-            if (response.StopReason == "pause_turn")
+            for (var attempt = 0; attempt <= MaxPauseTurnResumes; attempt++)
             {
-                // Server-side search loop paused mid-turn — append the partial assistant
-                // turn and re-send; the server resumes where it left off. Must carry the FULL
-                // content (server_tool_use / web_search_tool_result blocks included) —
-                // response.Message keeps only the text blocks, which would restart the
-                // research from scratch instead of resuming it
-                messages.Add(new Message { Role = RoleType.Assistant, Content = response.Content });
-                continue;
+                var response = await client.Messages.GetClaudeMessageAsync(parameters, budget.Token);
+
+                if (response.StopReason == "pause_turn")
+                {
+                    // Server-side search loop paused mid-turn — append the partial assistant
+                    // turn and re-send; the server resumes where it left off. Must carry the FULL
+                    // content (server_tool_use / web_search_tool_result blocks included) —
+                    // response.Message keeps only the text blocks, which would restart the
+                    // research from scratch instead of resuming it
+                    messages.Add(new Message { Role = RoleType.Assistant, Content = response.Content });
+                    continue;
+                }
+
+                // With server tools the answer is the LAST text block — earlier ones are
+                // search-narration ("Let me look at...") interleaved with result blocks
+                var responseText = response.Content?.OfType<TextContent>().LastOrDefault()?.Text ?? "{}";
+
+                _logger.LogInformation("AI news research ({Run}) complete: {Length} chars, {SearchCount} searches",
+                    runLabel, responseText.Length, response.Usage?.ServerToolUse?.WebSearchRequests ?? 0);
+
+                return responseText;
             }
-
-            // With server tools the answer is the LAST text block — earlier ones are
-            // search-narration ("Let me look at...") interleaved with result blocks
-            var responseText = response.Content?.OfType<TextContent>().LastOrDefault()?.Text ?? "{}";
-
-            _logger.LogInformation("AI news research ({Run}) complete: {Length} chars, {SearchCount} searches",
-                runLabel, responseText.Length, response.Usage?.ServerToolUse?.WebSearchRequests ?? 0);
-
-            return responseText;
+        }
+        catch (OperationCanceledException)
+        {
+            _logger.LogWarning("AI news research ({Run}) exceeded its {Budget}-minute budget — cut off",
+                runLabel, ResearchBudget.TotalMinutes);
+            return null;
         }
 
         _logger.LogWarning("AI news research ({Run}) still paused after {Max} resumes — giving up", runLabel, MaxPauseTurnResumes);
@@ -130,7 +152,7 @@ public class ClaudeNewsResearchService : INewsResearchService
         var apiKey = Environment.GetEnvironmentVariable("Anthropic__ApiKey")
             ?? throw new InvalidOperationException("Anthropic API key not configured");
 
-        return new AnthropicClient(apiKey);
+        return new AnthropicClient(apiKey, LongRunHttpClient);
     }
 
     internal static string FormatFeedbackSection(List<NewsRuleEntity> rules) =>
