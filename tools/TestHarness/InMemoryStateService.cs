@@ -168,22 +168,76 @@ public class InMemoryStateService : IStateService
     public Task<List<ReportedNewsEntity>> GetReportedNewsSinceAsync(DateTimeOffset since) =>
         Task.FromResult(_reportedNews.Values.Where(e => e.ReportedAt >= since).ToList());
 
+    public Task<ReportedNewsEntity?> GetReportedNewsAsync(string rowKey) =>
+        Task.FromResult(_reportedNews.GetValueOrDefault(rowKey));
+
     public Task SaveReportedNewsAsync(List<AiNewsItem> items)
     {
         var now = DateTimeOffset.UtcNow;
         foreach (var item in items)
         {
-            _reportedNews[item.Url] = new ReportedNewsEntity
+            var rowKey = HashUrl(item.Url);
+            _reportedNews[rowKey] = new ReportedNewsEntity
             {
-                RowKey = item.Url,
+                RowKey = rowKey,
                 Headline = item.Headline,
                 Url = item.Url,
                 Category = item.Category,
+                Summary = item.Summary,
+                WhyItMatters = item.WhyItMatters,
                 ReportedAt = now
             };
         }
         return Task.CompletedTask;
     }
+
+    // Same keying as TableStorageStateService.HashUrl so feedback-button lookups
+    // (which pass the hash) behave like production
+    private static string HashUrl(string url)
+    {
+        var bytes = System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(url));
+        return Convert.ToHexString(bytes)[..16].ToLowerInvariant();
+    }
+
+    private readonly Dictionary<string, NewsCandidateEntity> _newsCandidates = new();
+
+    public Task SaveNewsCandidatesAsync(List<NewsCandidateEntity> candidates)
+    {
+        var now = DateTimeOffset.UtcNow;
+        foreach (var candidate in candidates)
+        {
+            candidate.RowKey = HashUrl(!string.IsNullOrWhiteSpace(candidate.Url)
+                ? candidate.Url
+                : candidate.Headline);
+            candidate.SeenAt = now;
+            _newsCandidates[candidate.RowKey] = candidate;
+        }
+        return Task.CompletedTask;
+    }
+
+    public Task<List<NewsCandidateEntity>> GetNewsCandidatesSinceAsync(DateTimeOffset since) =>
+        Task.FromResult(_newsCandidates.Values.Where(c => c.SeenAt >= since).ToList());
+
+    private NewsRequestStateEntity? _newsRequest;
+
+    public Task<NewsRequestStateEntity?> GetNewsRequestAsync() => Task.FromResult(_newsRequest);
+
+    public Task SaveNewsRequestAsync(NewsRequestStateEntity entity)
+    {
+        _newsRequest = entity;
+        return Task.CompletedTask;
+    }
+
+    public Task ClearNewsRequestAsync()
+    {
+        _newsRequest = null;
+        return Task.CompletedTask;
+    }
+
+    private readonly HashSet<long> _claimedUpdates = new();
+
+    public Task<bool> TryClaimUpdateAsync(long updateId) =>
+        Task.FromResult(_claimedUpdates.Add(updateId));
 
     private readonly Dictionary<string, SenderStatsEntity> _senderStats = new();
 
