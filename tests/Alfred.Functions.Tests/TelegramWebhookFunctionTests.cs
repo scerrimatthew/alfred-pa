@@ -504,6 +504,42 @@ public class TelegramWebhookFunctionTests
     }
 
     [Fact]
+    public async Task Unsubscribe_OneClick_PostsTheRfc8058FormAndConfirms()
+    {
+        // RFC 8058: a single POST with body "List-Unsubscribe=One-Click", no interaction.
+        // The webhook news up its own HttpClient, so a loopback server plays the list host.
+        using var server = new LoopbackHttpServer();
+        var stats = SetUpSenderStat($"<{server.Url}>");
+        stats.ListUnsubscribeOneClick = true;
+
+        await RunAsync(CallbackUpdate("cb1", UserId, "unsub:s1"));
+
+        Assert.NotNull(server.RequestText);
+        Assert.StartsWith("POST /unsubscribe HTTP/1.1", server.RequestText);
+        Assert.Contains("application/x-www-form-urlencoded", server.RequestText);
+        Assert.EndsWith("List-Unsubscribe=One-Click", server.RequestText);
+
+        Assert.True(stats.Unsubscribed);
+        await _state.Received(1).UpsertSenderStatAsync(stats);
+        await _gmail.DidNotReceiveWithAnyArgs().SendUnsubscribeEmailAsync(default!, default);
+        await _notifications.Received(1).AnswerCallbackAsync("cb1", "Done — unsubscribed from Shop News.");
+    }
+
+    [Fact]
+    public async Task Unsubscribe_OneClickRejected_FallsBackToTheMailtoAddress()
+    {
+        using var server = new LoopbackHttpServer { ResponseStatusCode = 500 };
+        var stats = SetUpSenderStat($"<{server.Url}>, <mailto:unsub@shop.com>");
+        stats.ListUnsubscribeOneClick = true;
+
+        await RunAsync(CallbackUpdate("cb1", UserId, "unsub:s1"));
+
+        await _gmail.Received(1).SendUnsubscribeEmailAsync("unsub@shop.com", null);
+        Assert.True(stats.Unsubscribed);
+        await _notifications.Received(1).AnswerCallbackAsync("cb1", Arg.Is<string>(m => m.Contains("sent the unsubscribe email")));
+    }
+
+    [Fact]
     public async Task Unsubscribe_NoUsableMechanism_SaysSo()
     {
         SetUpSenderStat(null);

@@ -7,15 +7,9 @@ using Xunit;
 namespace Alfred.Functions.Tests;
 
 // Pins the deterministic calendar logic: dedup title similarity, reminder placement,
-// school-day windows, event construction, and the dedup hash. These are private
-// statics on GoogleCalendarService, reached via reflection (see PrivateAccess).
+// school-day windows, event construction, and the dedup hash.
 public class GoogleCalendarServiceLogicTests
 {
-    private static readonly Type Service = typeof(GoogleCalendarService);
-
-    private static bool TitlesAreSimilar(string a, string b) =>
-        PrivateAccess.Invoke<bool>(Service, "TitlesAreSimilar", null, a, b);
-
     // ---- Dedup title similarity ----
 
     [Theory]
@@ -29,20 +23,20 @@ public class GoogleCalendarServiceLogicTests
     [InlineData("Outing: Zoo Year 1", "Meeting: Online Safety", false)]
     public void TitlesAreSimilar_MatchesSameEventsAndSeparatesDifferentOnes(string a, string b, bool expected)
     {
-        Assert.Equal(expected, TitlesAreSimilar(a, b));
+        Assert.Equal(expected, GoogleCalendarService.TitlesAreSimilar(a, b));
     }
 
     [Fact]
     public void TitlesAreSimilar_TitlesMadeOnlyOfStopWords_NeverMatch()
     {
-        Assert.False(TitlesAreSimilar("Year 1", "Year 1"));
-        Assert.False(TitlesAreSimilar("", "Sports Day"));
+        Assert.False(GoogleCalendarService.TitlesAreSimilar("Year 1", "Year 1"));
+        Assert.False(GoogleCalendarService.TitlesAreSimilar("", "Sports Day"));
     }
 
     [Fact]
     public void TitlesAreSimilar_IsCaseInsensitive()
     {
-        Assert.True(TitlesAreSimilar("SPORTS DAY", "sports day"));
+        Assert.True(GoogleCalendarService.TitlesAreSimilar("SPORTS DAY", "sports day"));
     }
 
     [Theory]
@@ -52,13 +46,13 @@ public class GoogleCalendarServiceLogicTests
     [InlineData("No prefix at all", "No prefix at all")]
     public void StripCategoryPrefix_RemovesOnlyKnownAlfredPrefixes(string title, string expected)
     {
-        Assert.Equal(expected, PrivateAccess.Invoke<string>(Service, "StripCategoryPrefix", null, title));
+        Assert.Equal(expected, GoogleCalendarService.StripCategoryPrefix(title));
     }
 
     [Fact]
     public void ExtractSignificantWords_DropsStopWordsAndSingleLetters()
     {
-        var words = PrivateAccess.Invoke<HashSet<string>>(Service, "ExtractSignificantWords", null,
+        var words = GoogleCalendarService.ExtractSignificantWords(
             "The Year 1 Outing to Bristow Potteries (a fun day)");
 
         Assert.Contains("outing", words);
@@ -82,8 +76,7 @@ public class GoogleCalendarServiceLogicTests
     [InlineData("2026-08-22", 1, "2026-08-24")] // Saturday + 1 = Monday
     public void GetSchoolDaysFromNow_SkipsWeekends(string start, int schoolDays, string expected)
     {
-        var result = PrivateAccess.Invoke<DateTime>(Service, "GetSchoolDaysFromNow", null,
-            DateTime.Parse(start), schoolDays);
+        var result = GoogleCalendarService.GetSchoolDaysFromNow(DateTime.Parse(start), schoolDays);
 
         Assert.Equal(DateTime.Parse(expected), result);
     }
@@ -94,8 +87,7 @@ public class GoogleCalendarServiceLogicTests
     public void BuildReminder_FutureAllDayEvent_PopsUpAtSixTheEveningBefore()
     {
         // Midnight start; 18:00 the evening before is 6 hours earlier
-        var reminders = PrivateAccess.Invoke<Event.RemindersData>(Service, "BuildReminder", null,
-            new DateTime(2100, 5, 10, 0, 0, 0));
+        var reminders = GoogleCalendarService.BuildReminder(new DateTime(2100, 5, 10, 0, 0, 0));
 
         Assert.False(reminders.UseDefault);
         var reminder = Assert.Single(reminders.Overrides!);
@@ -107,8 +99,7 @@ public class GoogleCalendarServiceLogicTests
     public void BuildReminder_FutureTimedEvent_CountsBackFromTheStartTime()
     {
         // Start 09:00; reminder 18:00 the day before = 15 hours earlier
-        var reminders = PrivateAccess.Invoke<Event.RemindersData>(Service, "BuildReminder", null,
-            new DateTime(2100, 5, 10, 9, 0, 0));
+        var reminders = GoogleCalendarService.BuildReminder(new DateTime(2100, 5, 10, 9, 0, 0));
 
         Assert.Equal(15 * 60, Assert.Single(reminders.Overrides!).Minutes);
     }
@@ -117,8 +108,7 @@ public class GoogleCalendarServiceLogicTests
     public void BuildReminder_EventThatAlreadyStarted_GetsAZeroOffsetInsteadOfANegativeOne()
     {
         // Google rejects negative offsets; an already-started event cannot be nudged
-        var reminders = PrivateAccess.Invoke<Event.RemindersData>(Service, "BuildReminder", null,
-            new DateTime(2020, 1, 1, 9, 0, 0));
+        var reminders = GoogleCalendarService.BuildReminder(new DateTime(2020, 1, 1, 9, 0, 0));
 
         Assert.Equal(0, Assert.Single(reminders.Overrides!).Minutes);
     }
@@ -131,7 +121,7 @@ public class GoogleCalendarServiceLogicTests
         var maltaNow = TimeZoneInfo.ConvertTime(DateTimeOffset.UtcNow, TestData.MaltaTz).DateTime;
         var start = maltaNow.AddHours(2);
 
-        var reminders = PrivateAccess.Invoke<Event.RemindersData>(Service, "BuildReminder", null, start);
+        var reminders = GoogleCalendarService.BuildReminder(start);
 
         var minutes = Assert.Single(reminders.Overrides!).Minutes!.Value;
         Assert.InRange(minutes, 100, 118); // 120 minutes minus the ~5-minute lead, with slack
@@ -150,7 +140,7 @@ public class GoogleCalendarServiceLogicTests
             Action = CalendarEventAction.Create
         };
 
-        var ev = PrivateAccess.Invoke<Event>(Service, "BuildCalendarEvent", null, info, false);
+        var ev = GoogleCalendarService.BuildCalendarEvent(info, tagAsAlfred: false);
 
         Assert.Equal("Field Day", ev.Summary);
         Assert.Equal("Wear sports kit", ev.Description);
@@ -171,7 +161,7 @@ public class GoogleCalendarServiceLogicTests
             Action = CalendarEventAction.Create
         };
 
-        var ev = PrivateAccess.Invoke<Event>(Service, "BuildCalendarEvent", null, info, false);
+        var ev = GoogleCalendarService.BuildCalendarEvent(info, tagAsAlfred: false);
 
         Assert.Equal("Europe/Malta", ev.Start!.TimeZone);
         // July is CEST (UTC+2)
@@ -192,7 +182,7 @@ public class GoogleCalendarServiceLogicTests
             Action = CalendarEventAction.Create
         };
 
-        var ev = PrivateAccess.Invoke<Event>(Service, "BuildCalendarEvent", null, info, false);
+        var ev = GoogleCalendarService.BuildCalendarEvent(info, tagAsAlfred: false);
 
         Assert.Equal(new DateTimeOffset(2100, 7, 10, 11, 30, 0, TimeSpan.FromHours(2)), ev.End!.DateTimeDateTimeOffset);
     }
@@ -208,7 +198,7 @@ public class GoogleCalendarServiceLogicTests
             Action = CalendarEventAction.Create
         };
 
-        var ev = PrivateAccess.Invoke<Event>(Service, "BuildCalendarEvent", null, info, true);
+        var ev = GoogleCalendarService.BuildCalendarEvent(info, tagAsAlfred: true);
 
         Assert.NotNull(ev.ExtendedProperties?.Private__);
         Assert.Equal("true", ev.ExtendedProperties.Private__["alfred"]);
@@ -219,10 +209,10 @@ public class GoogleCalendarServiceLogicTests
     [Fact]
     public void ComputeHash_IsDeterministic16CharLowercaseHex()
     {
-        var hash = PrivateAccess.Invoke<string>(Service, "ComputeHash", null, "Sports Day_2026-09-10");
+        var hash = GoogleCalendarService.ComputeHash("Sports Day_2026-09-10");
 
         Assert.Matches("^[0-9a-f]{16}$", hash);
-        Assert.Equal(hash, PrivateAccess.Invoke<string>(Service, "ComputeHash", null, "Sports Day_2026-09-10"));
-        Assert.NotEqual(hash, PrivateAccess.Invoke<string>(Service, "ComputeHash", null, "Sports Day_2026-09-11"));
+        Assert.Equal(hash, GoogleCalendarService.ComputeHash("Sports Day_2026-09-10"));
+        Assert.NotEqual(hash, GoogleCalendarService.ComputeHash("Sports Day_2026-09-11"));
     }
 }

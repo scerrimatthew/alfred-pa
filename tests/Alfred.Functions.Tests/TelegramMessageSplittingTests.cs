@@ -1,17 +1,16 @@
 using Alfred.Functions.Services.Notifications;
-using Alfred.Functions.Tests.Support;
 using Xunit;
 
 namespace Alfred.Functions.Tests;
 
 // Telegram rejects messages over 4096 characters; SplitMessage is what keeps long
-// digests deliverable. Private static, reached via reflection (see PrivateAccess).
+// digests deliverable.
 public class TelegramMessageSplittingTests
 {
     private const int MaxLength = 4096;
 
     private static List<string> Split(string message) =>
-        PrivateAccess.Invoke<List<string>>(typeof(TelegramNotificationService), "SplitMessage", null, message);
+        TelegramNotificationService.SplitMessage(message);
 
     [Fact]
     public void ShortMessage_StaysInOnePiece()

@@ -1,23 +1,19 @@
 using Alfred.Functions.Models;
 using Alfred.Functions.Services.AI;
-using Alfred.Functions.Tests.Support;
 using Xunit;
 using static Alfred.Functions.Tests.Support.TestData;
 
 namespace Alfred.Functions.Tests;
 
 // Pins the parsing of Claude's JSON replies — the safety net between a flaky LLM
-// response and a silently dropped invoice. The parsers are private statics on
-// ClaudeSummarizerService, reached via reflection (see PrivateAccess).
+// response and a silently dropped invoice.
 public class ClaudeSummarizerParsingTests
 {
-    private static readonly Type Service = typeof(ClaudeSummarizerService);
-
     private static EmailDigest ParseDigest(string json) =>
-        PrivateAccess.Invoke<EmailDigest>(Service, "ParseDigestResponse", null, json);
+        ClaudeSummarizerService.ParseDigestResponse(json);
 
     private static PersonalEmailTriage ParseTriage(string json, SchoolEmail? email = null) =>
-        PrivateAccess.Invoke<PersonalEmailTriage>(Service, "ParseTriageResponse", null, json, email ?? Email());
+        ClaudeSummarizerService.ParseTriageResponse(json, email ?? Email());
 
     // ---- School email digests ----
 
@@ -257,8 +253,7 @@ public class ClaudeSummarizerParsingTests
     [Fact]
     public void ConversationSection_Empty_ProducesNothing()
     {
-        var section = PrivateAccess.Invoke<string>(Service, "FormatConversationSection", null,
-            new List<ChatTurnEntity>());
+        var section = ClaudeSummarizerService.FormatConversationSection(new List<ChatTurnEntity>());
 
         Assert.Equal(string.Empty, section);
     }
@@ -277,7 +272,7 @@ public class ClaudeSummarizerParsingTests
             }
         };
 
-        var section = PrivateAccess.Invoke<string>(Service, "FormatConversationSection", null, turns);
+        var section = ClaudeSummarizerService.FormatConversationSection(turns);
 
         Assert.Contains("RECENT CONVERSATION", section);
         Assert.Contains("12:00] Q: what's due?", section);

@@ -1,6 +1,5 @@
 using Alfred.Functions.Models;
 using Alfred.Functions.Services.AI;
-using Alfred.Functions.Tests.Support;
 using Xunit;
 using static Alfred.Functions.Tests.Support.TestData;
 
@@ -10,15 +9,13 @@ namespace Alfred.Functions.Tests;
 // body-size cap, and the date the model is told to resolve relative words against.
 public class ClaudeSummarizerPromptTests
 {
-    private static readonly Type Service = typeof(ClaudeSummarizerService);
-
     private static string BuildTriagePrompt(
         SchoolEmail email,
         List<SuppressionRuleEntity>? suppressionRules = null,
         List<AttentionRuleEntity>? attentionRules = null,
         List<ProcessedEmailEntity>? threadContext = null)
     {
-        return PrivateAccess.Invoke<string>(Service, "BuildTriagePrompt", null,
+        return ClaudeSummarizerService.BuildTriagePrompt(
             email, "Wednesday, 19 August 2026", "",
             suppressionRules ?? [], attentionRules ?? [], threadContext ?? []);
     }
@@ -112,7 +109,7 @@ public class ClaudeSummarizerPromptTests
             body: "See attached plan",
             receivedDate: new DateTimeOffset(2026, 4, 20, 7, 0, 0, TimeSpan.Zero));
 
-        var prompt = PrivateAccess.Invoke<string>(Service, "BuildSummarizePrompt", null,
+        var prompt = ClaudeSummarizerService.BuildSummarizePrompt(
             email, "Monday, 20 April 2026", "\n\nDocument Contents:\n[plan.pdf]\nMonday: PE kit", "\n\nLinks found in email:\n- Newsletter: https://x.com/n.pdf");
 
         Assert.Contains("Email Subject: Weekly plan", prompt);
@@ -125,7 +122,7 @@ public class ClaudeSummarizerPromptTests
     [Fact]
     public void DigestPrompt_EmbedsTheDataAndTheDate()
     {
-        var (system, user) = PrivateAccess.Invoke<(string System, string User)>(Service, "BuildDigestPrompt", null,
+        var (system, user) = ClaudeSummarizerService.BuildDigestPrompt(
             "Wednesday, 19 August 2026",
             "- [Teacher] Reminder: bring hats",
             2,

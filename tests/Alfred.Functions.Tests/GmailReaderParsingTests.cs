@@ -3,7 +3,7 @@ using Alfred.Functions.Models;
 using Alfred.Functions.Services.Gmail;
 using Alfred.Functions.Services.Pdf;
 using Alfred.Functions.Services.State;
-using Alfred.Functions.Tests.Support;
+using Google.Apis.Gmail.v1;
 using Google.Apis.Gmail.v1.Data;
 using Microsoft.Extensions.Logging.Abstractions;
 using NSubstitute;
@@ -17,8 +17,6 @@ namespace Alfred.Functions.Tests;
 // message without attachment parts can be parsed entirely offline.
 public class GmailReaderParsingTests
 {
-    private static readonly Type Service = typeof(GmailReaderService);
-
     private readonly GmailReaderService _reader = new(
         Options(),
         Microsoft.Extensions.Options.Options.Create(new Alfred.Functions.Configuration.GoogleOptions()),
@@ -26,9 +24,11 @@ public class GmailReaderParsingTests
         Substitute.For<IPdfExtractorService>(),
         NullLogger<GmailReaderService>.Instance);
 
+    // Never receives a request in these tests — the parsed messages carry no PDF attachments
+    private static readonly GmailService IdleGmailService = new();
+
     private Task<SchoolEmail?> ParseAsync(Message message) =>
-        PrivateAccess.Invoke<Task<SchoolEmail?>>(Service, "ParseMessageAsync", _reader,
-            null, message, false);
+        _reader.ParseMessageAsync(IdleGmailService, message, downloadLinkedDocuments: false);
 
     private static string Base64Url(string text) =>
         Convert.ToBase64String(Encoding.UTF8.GetBytes(text)).Replace('+', '-').Replace('/', '_');
@@ -207,7 +207,7 @@ public class GmailReaderParsingTests
     [InlineData("plain@address.com", "plain@address.com")]
     public void ExtractSenderName_HandlesDisplayNamesAndBareAddresses(string from, string expected)
     {
-        Assert.Equal(expected, PrivateAccess.Invoke<string>(Service, "ExtractSenderName", null, from));
+        Assert.Equal(expected, GmailReaderService.ExtractSenderName(from));
     }
 
     [Theory]
@@ -215,7 +215,7 @@ public class GmailReaderParsingTests
     [InlineData("plain@address.com", "plain@address.com")]
     public void ExtractEmail_PullsTheAddressOutOfAngleBrackets(string from, string expected)
     {
-        Assert.Equal(expected, PrivateAccess.Invoke<string>(Service, "ExtractEmail", null, from));
+        Assert.Equal(expected, GmailReaderService.ExtractEmail(from));
     }
 
     [Fact]
@@ -223,7 +223,7 @@ public class GmailReaderParsingTests
     {
         var html = "<style>body { color: red; }</style><div>Fish &amp; Chips &lt;tonight&gt;</div><p>Second&nbsp;line</p>";
 
-        var text = PrivateAccess.Invoke<string>(Service, "StripHtml", null, html);
+        var text = GmailReaderService.StripHtml(html);
 
         Assert.DoesNotContain("color", text);
         Assert.Contains("Fish & Chips <tonight>", text);
@@ -236,7 +236,7 @@ public class GmailReaderParsingTests
     {
         var html = "<ul><li>One</li><li>Two</li></ul><p>End</p><p></p><p></p><p>Tail</p>";
 
-        var text = PrivateAccess.Invoke<string>(Service, "StripHtml", null, html);
+        var text = GmailReaderService.StripHtml(html);
 
         Assert.Contains("• One", text);
         Assert.Contains("• Two", text);
@@ -255,7 +255,7 @@ public class GmailReaderParsingTests
             <a href="https://other.com/page">other</a>
             """;
 
-        var links = PrivateAccess.Invoke<List<string>>(Service, "ExtractLinks", null, html);
+        var links = GmailReaderService.ExtractLinks(html);
 
         Assert.Equal(new[] { "https://example.com/doc.pdf", "https://other.com/page" }, links);
     }
@@ -267,15 +267,15 @@ public class GmailReaderParsingTests
     [InlineData("not a url at all", "document")]
     public void GetFileNameFromUrl_UsesTheLastPathSegment(string url, string expected)
     {
-        Assert.Equal(expected, PrivateAccess.Invoke<string>(Service, "GetFileNameFromUrl", null, url));
+        Assert.Equal(expected, GmailReaderService.GetFileNameFromUrl(url));
     }
 
     [Fact]
     public void EncodeHeaderValue_LeavesAsciiAloneAndEncodesUtf8()
     {
-        Assert.Equal("Re: hello", PrivateAccess.Invoke<string>(Service, "EncodeHeaderValue", null, "Re: hello"));
+        Assert.Equal("Re: hello", GmailReaderService.EncodeHeaderValue("Re: hello"));
 
-        var encoded = PrivateAccess.Invoke<string>(Service, "EncodeHeaderValue", null, "Re: Ħal Qormi");
+        var encoded = GmailReaderService.EncodeHeaderValue("Re: Ħal Qormi");
         var expected = $"=?utf-8?B?{Convert.ToBase64String(Encoding.UTF8.GetBytes("Re: Ħal Qormi"))}?=";
         Assert.Equal(expected, encoded);
     }
@@ -283,8 +283,7 @@ public class GmailReaderParsingTests
     [Fact]
     public void SplitAddresses_TrimsAndDropsEmpties()
     {
-        var addresses = PrivateAccess.Invoke<IEnumerable<string>>(
-            Service, "SplitAddresses", null, "a@x.com, b@y.com , ,c@z.com");
+        var addresses = GmailReaderService.SplitAddresses("a@x.com, b@y.com , ,c@z.com");
 
         Assert.Equal(new[] { "a@x.com", "b@y.com", "c@z.com" }, addresses.ToList());
     }
@@ -293,6 +292,6 @@ public class GmailReaderParsingTests
     public void DecodeBase64_HandlesUrlSafeAlphabet()
     {
         // "??>" encodes to "Pz8-" in the URL-safe alphabet ("Pz8+" in standard base64)
-        Assert.Equal("??>", PrivateAccess.Invoke<string>(Service, "DecodeBase64", null, "Pz8-"));
+        Assert.Equal("??>", GmailReaderService.DecodeBase64("Pz8-"));
     }
 }
