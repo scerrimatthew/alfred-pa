@@ -31,6 +31,7 @@ public class TelegramWebhookToolTests : IAsyncLifetime
     private readonly INotificationService _notifications = Substitute.For<INotificationService>();
     private readonly IGmailReaderService _gmail = Substitute.For<IGmailReaderService>();
     private readonly INewsResearchService _newsResearch = Substitute.For<INewsResearchService>();
+    private readonly IAnthropicCostService _cost = Substitute.For<IAnthropicCostService>();
 
     private Func<string, JsonNode?, Task<string>> _executeTool = null!;
 
@@ -58,7 +59,7 @@ public class TelegramWebhookToolTests : IAsyncLifetime
             o.PersonalTelegramChatId = PersonalChatId.ToString();
         });
         var function = new TelegramWebhookFunction(
-            _state, _calendar, _summarizer, _notifications, _gmail, _newsResearch, options,
+            _state, _calendar, _summarizer, _notifications, _gmail, _newsResearch, _cost, options,
             NullLogger<TelegramWebhookFunction>.Instance);
 
         var body = JsonSerializer.Serialize(new

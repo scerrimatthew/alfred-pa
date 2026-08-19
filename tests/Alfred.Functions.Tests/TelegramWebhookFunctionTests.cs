@@ -31,6 +31,7 @@ public class TelegramWebhookFunctionTests
     private readonly INotificationService _notifications = Substitute.For<INotificationService>();
     private readonly IGmailReaderService _gmail = Substitute.For<IGmailReaderService>();
     private readonly INewsResearchService _newsResearch = Substitute.For<INewsResearchService>();
+    private readonly IAnthropicCostService _cost = Substitute.For<IAnthropicCostService>();
 
     // Backing store for the /news in-flight marker, so Save/Get/Clear behave like the
     // real single-row table and the finally-block ownership check sees its own write
@@ -66,10 +67,11 @@ public class TelegramWebhookFunctionTests
                 Arg.Any<List<NewsCandidateEntity>>(), Arg.Any<string?>())
             .Returns(new AiNewsDigest());
         _summarizer.TellJokeAsync(Arg.Any<string>(), Arg.Any<List<string>>()).Returns("a joke");
+        _cost.GetCostSummaryAsync().Returns("💳 the spend summary");
     }
 
     private TelegramWebhookFunction CreateFunction(Action<AlfredOptions>? mutate = null) =>
-        new(_state, _calendar, _summarizer, _notifications, _gmail, _newsResearch,
+        new(_state, _calendar, _summarizer, _notifications, _gmail, _newsResearch, _cost,
             Options(o =>
             {
                 o.TelegramWebhookSecret = Secret;
@@ -741,7 +743,7 @@ public class TelegramWebhookFunctionTests
 
         var logger = Substitute.For<Microsoft.Extensions.Logging.ILogger<TelegramWebhookFunction>>();
         var function = new TelegramWebhookFunction(
-            _state, _calendar, _summarizer, _notifications, _gmail, _newsResearch,
+            _state, _calendar, _summarizer, _notifications, _gmail, _newsResearch, _cost,
             Options(o =>
             {
                 o.TelegramWebhookSecret = Secret;
@@ -1160,6 +1162,97 @@ public class TelegramWebhookFunctionTests
 
         await _notifications.Received(1).SendMessageAsync(
             PersonalChatId, Arg.Is<string>(m => m.Contains("started a coding session")));
+    }
+
+    // ---- /cost command ----
+
+    private static async Task WithAdminKeyEnvAsync(string? value, Func<Task> body)
+    {
+        var original = Environment.GetEnvironmentVariable("Anthropic__AdminApiKey");
+        try
+        {
+            Environment.SetEnvironmentVariable("Anthropic__AdminApiKey", value);
+            await body();
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("Anthropic__AdminApiKey", original);
+        }
+    }
+
+    [Theory]
+    [InlineData("/cost")]
+    [InlineData("/cost@AlfredBot")] // bot-mention form
+    [InlineData("/COST")]           // case-insensitive
+    public async Task Cost_RepliesWithTheSpendSummary(string text)
+    {
+        await WithAdminKeyEnvAsync("sk-ant-admin-test", async () =>
+        {
+            var status = await RunAsync(MessageUpdate(PersonalChatId, UserId, text));
+
+            Assert.Equal(HttpStatusCode.OK, status);
+            await _notifications.Received(1).SendMessageAsync(PersonalChatId, "💳 the spend summary");
+            // Routed as a command, never as a question
+            await _summarizer.DidNotReceiveWithAnyArgs().AnswerPersonalQuestionAsync(
+                default!, default!, default!, default!, default!, default!, default!, default!);
+        });
+    }
+
+    [Fact]
+    public async Task Cost_WithoutTheAdminKey_ExplainsWhereToCreateOne()
+    {
+        await WithAdminKeyEnvAsync(null, async () =>
+        {
+            await RunAsync(MessageUpdate(PersonalChatId, UserId, "/cost"));
+
+            await _notifications.Received(1).SendMessageAsync(
+                PersonalChatId, Arg.Is<string>(m =>
+                    m.Contains("Anthropic__AdminApiKey") && m.Contains("Admin keys") && m.Contains("separate key")));
+            await _cost.DidNotReceive().GetCostSummaryAsync();
+        });
+    }
+
+    [Fact]
+    public async Task Cost_ServiceFailure_RepliesWithTheDiagnosticSignature()
+    {
+        _cost.GetCostSummaryAsync().ThrowsAsync(new InvalidOperationException("Cost API returned 401: nope"));
+
+        await WithAdminKeyEnvAsync("sk-ant-admin-test", async () =>
+        {
+            var status = await RunAsync(MessageUpdate(PersonalChatId, UserId, "/cost"));
+
+            Assert.Equal(HttpStatusCode.OK, status);
+            await _notifications.Received(1).SendMessageAsync(PersonalChatId,
+                "Couldn't fetch the cost report. (InvalidOperationException: Cost API returned 401: nope)");
+        });
+    }
+
+    [Fact]
+    public async Task CostPrefixedWord_IsNotTheCostCommand()
+    {
+        // "/costs" has an 's' where the matcher demands whitespace or end-of-text
+        await RunAsync(MessageUpdate(PersonalChatId, UserId, "/costs anyone?"));
+
+        await _cost.DidNotReceive().GetCostSummaryAsync();
+        await _summarizer.Received(1).AnswerPersonalQuestionAsync(
+            "/costs anyone?",
+            Arg.Any<List<ProcessedEmailEntity>>(), Arg.Any<List<Event>>(),
+            Arg.Any<List<ProcessedEmailEntity>>(), Arg.Any<List<Event>>(),
+            Arg.Any<List<ReportedNewsEntity>>(), Arg.Any<List<ChatTurnEntity>>(),
+            Arg.Any<Func<string, System.Text.Json.Nodes.JsonNode?, Task<string>>>());
+    }
+
+    [Fact]
+    public async Task CostFromTheSchoolChat_IsTreatedAsAnOrdinaryQuestion()
+    {
+        await WithAdminKeyEnvAsync("sk-ant-admin-test", async () =>
+        {
+            await RunAsync(MessageUpdate(SchoolChatId, UserId, "/cost"));
+
+            await _cost.DidNotReceive().GetCostSummaryAsync();
+            await _summarizer.Received(1).AnswerQuestionAsync(
+                "/cost", Arg.Any<List<ProcessedEmailEntity>>(), Arg.Any<List<Event>>(), Arg.Any<List<ChatTurnEntity>>());
+        });
     }
 
     [Fact]

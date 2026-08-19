@@ -28,6 +28,7 @@ public class TelegramWebhookFunction
     private readonly INotificationService _notificationService;
     private readonly IGmailReaderService _gmailReader;
     private readonly INewsResearchService _newsResearch;
+    private readonly IAnthropicCostService _costService;
     private readonly AlfredOptions _options;
     private readonly ILogger<TelegramWebhookFunction> _logger;
 
@@ -38,6 +39,7 @@ public class TelegramWebhookFunction
         INotificationService notificationService,
         IGmailReaderService gmailReader,
         INewsResearchService newsResearch,
+        IAnthropicCostService costService,
         IOptions<AlfredOptions> options,
         ILogger<TelegramWebhookFunction> logger)
     {
@@ -47,6 +49,7 @@ public class TelegramWebhookFunction
         _notificationService = notificationService;
         _gmailReader = gmailReader;
         _newsResearch = newsResearch;
+        _costService = costService;
         _options = options.Value;
         _logger = logger;
     }
@@ -176,6 +179,15 @@ public class TelegramWebhookFunction
                         | System.Text.RegularExpressions.RegexOptions.Singleline))
             {
                 await HandleDeployCommandAsync(chatId);
+                return req.CreateResponse(System.Net.HttpStatusCode.OK);
+            }
+
+            if (isPersonalChat && System.Text.RegularExpressions.Regex.IsMatch(
+                    question.TrimStart(), @"^/cost(?:@\S+)?(?:\s|$)",
+                    System.Text.RegularExpressions.RegexOptions.IgnoreCase
+                        | System.Text.RegularExpressions.RegexOptions.Singleline))
+            {
+                await HandleCostCommandAsync(chatId);
                 return req.CreateResponse(System.Net.HttpStatusCode.OK);
             }
 
@@ -712,6 +724,32 @@ public class TelegramWebhookFunction
             _logger.LogError("Deploy dispatch failed: {Status} {Body}", response.StatusCode, body);
             await _notificationService.SendMessageAsync(chatId,
                 $"Couldn't start the deploy — GitHub returned {(int)response.StatusCode}.");
+        }
+    }
+
+    // "/cost" — the organization's Anthropic API spend, from the Admin API cost report.
+    // Needs Anthropic__AdminApiKey (an sk-ant-admin key — separate from the normal API key).
+    private async Task HandleCostCommandAsync(long chatId)
+    {
+        if (string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("Anthropic__AdminApiKey")))
+        {
+            await _notificationService.SendMessageAsync(chatId,
+                "The Anthropic admin key (Anthropic__AdminApiKey) isn't configured. It's a separate key from the "
+                + "normal API key — create one under Console → Settings → Organization → Admin keys "
+                + "(requires an organization account, not an individual one) and add it to the function app settings.");
+            return;
+        }
+
+        try
+        {
+            var summary = await _costService.GetCostSummaryAsync();
+            await _notificationService.SendMessageAsync(chatId, summary);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Cost report failed");
+            await _notificationService.SendMessageAsync(chatId,
+                $"Couldn't fetch the cost report. ({ErrorSignature(ex)})");
         }
     }
 
