@@ -109,6 +109,12 @@ public class TelegramWebhookFunction
             }
 
             var command = question.Trim();
+            if (TryParseJokeCommand(command, out var jokeTopic))
+            {
+                await HandleJokeCommandAsync(chatId, jokeTopic);
+                return req.CreateResponse(System.Net.HttpStatusCode.OK);
+            }
+
             if (command.Equals("/new", StringComparison.OrdinalIgnoreCase) ||
                 command.Equals("/reset", StringComparison.OrdinalIgnoreCase))
             {
@@ -409,6 +415,53 @@ public class TelegramWebhookFunction
             + "(roughly every 15 minutes), categorizing, labeling, and picking up future deadlines. "
             + "No notifications along the way; I'll message you once when it's done. "
             + "Anything already processed is skipped automatically.");
+    }
+
+    // "/joke [topic]" — available in both chats. In group chats Telegram appends the bot
+    // name to commands ("/joke@alfred_bot"), so the mention is stripped before the topic.
+    private static bool TryParseJokeCommand(string text, out string topic)
+    {
+        topic = "";
+        if (!text.StartsWith("/joke", StringComparison.OrdinalIgnoreCase))
+            return false;
+
+        var rest = text["/joke".Length..];
+        if (rest.StartsWith('@'))
+        {
+            var space = rest.IndexOf(' ');
+            rest = space < 0 ? "" : rest[space..];
+        }
+        else if (rest.Length > 0 && !char.IsWhiteSpace(rest[0]))
+        {
+            // Something like "/jokes" — not this command
+            return false;
+        }
+
+        topic = rest.Trim();
+        return true;
+    }
+
+    private async Task HandleJokeCommandAsync(long chatId, string topic)
+    {
+        // The chat history (kept for a day) doubles as the "already told that one" list
+        var recentTurns = await _stateService.GetRecentChatTurnsAsync(chatId, DateTimeOffset.UtcNow.AddDays(-1), 20);
+        var recentJokes = recentTurns
+            .Where(t => t.Question.StartsWith("/joke", StringComparison.OrdinalIgnoreCase))
+            .Select(t => t.Answer)
+            .ToList();
+
+        var joke = await _summarizerService.TellJokeAsync(topic, recentJokes);
+        await _notificationService.SendMessageAsync(chatId, joke);
+
+        try
+        {
+            await _stateService.SaveChatTurnAsync(chatId, topic.Length > 0 ? $"/joke {topic}" : "/joke", TrimAnswerForHistory(joke));
+        }
+        catch (Exception ex)
+        {
+            // The joke already went out — a history write failure shouldn't surface as a webhook error
+            _logger.LogWarning(ex, "Failed to save joke turn for chat {ChatId}", chatId);
+        }
     }
 
     // "/evolve <instruction>" hands the instruction to a GitHub Actions workflow that runs a
