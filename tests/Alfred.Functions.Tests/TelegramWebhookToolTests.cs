@@ -42,6 +42,7 @@ public class TelegramWebhookToolTests : IAsyncLifetime
         _state.GetRecentChatTurnsAsync(Arg.Any<long>(), Arg.Any<DateTimeOffset>(), Arg.Any<int>())
             .Returns(new List<ChatTurnEntity>());
         _state.GetReportedNewsSinceAsync(Arg.Any<DateTimeOffset>()).Returns(new List<ReportedNewsEntity>());
+        _state.GetUserFactsAsync().Returns(new List<UserFactEntity>());
         _calendar.GetUpcomingEventsAsync(Arg.Any<int>()).Returns(new List<Event>());
         _calendar.GetUpcomingPersonalEventsAsync(Arg.Any<int>()).Returns(new List<Event>());
 
@@ -49,7 +50,7 @@ public class TelegramWebhookToolTests : IAsyncLifetime
         _summarizer.AnswerPersonalQuestionAsync(
                 Arg.Any<string>(), Arg.Any<List<ProcessedEmailEntity>>(), Arg.Any<List<Event>>(),
                 Arg.Any<List<ProcessedEmailEntity>>(), Arg.Any<List<Event>>(), Arg.Any<List<ReportedNewsEntity>>(),
-                Arg.Any<List<ChatTurnEntity>>(),
+                Arg.Any<List<UserFactEntity>>(), Arg.Any<List<ChatTurnEntity>>(),
                 Arg.Do<Func<string, JsonNode?, Task<string>>>(f => captured = f))
             .Returns("answer");
 
@@ -240,6 +241,69 @@ public class TelegramWebhookToolTests : IAsyncLifetime
 
         Assert.StartsWith("Error:", result);
         await _state.DidNotReceiveWithAnyArgs().DeleteNewsRuleAsync(default!);
+    }
+
+    // ---- User facts ----
+
+    [Fact]
+    public async Task RememberFact_SavesWithAGeneratedIdAndConfirmsWithThatId()
+    {
+        string? savedId = null;
+        _state.When(s => s.SaveUserFactAsync(Arg.Any<string>(), Arg.Any<string>()))
+            .Do(ci => savedId = ci.ArgAt<string>(0));
+
+        var result = await _executeTool("remember_fact", Input(new { fact = "Matthew's apartment at Hillcrest is A5 in Block A." }));
+
+        await _state.Received(1).SaveUserFactAsync(
+            Arg.Is<string>(id => id.Length == 8), "Matthew's apartment at Hillcrest is A5 in Block A.");
+        Assert.NotNull(savedId);
+        // The confirmation must echo the id that was actually stored, or forget_fact can't target it
+        Assert.Equal($"Fact {savedId} saved: Matthew's apartment at Hillcrest is A5 in Block A.", result);
+    }
+
+    [Fact]
+    public async Task RememberFact_MissingOrBlankFact_ReturnsAnError()
+    {
+        Assert.Equal("Error: no fact provided.", await _executeTool("remember_fact", Input(new { })));
+        Assert.Equal("Error: no fact provided.", await _executeTool("remember_fact", Input(new { fact = "   " })));
+        await _state.DidNotReceiveWithAnyArgs().SaveUserFactAsync(default!, default!);
+    }
+
+    [Fact]
+    public async Task ListFacts_EmptyAndPopulated_OldestFirstWithSavedDates()
+    {
+        Assert.Equal("No facts are saved.", await _executeTool("list_facts", null));
+
+        _state.GetUserFactsAsync().Returns(new List<UserFactEntity>
+        {
+            new() { RowKey = "f2", Fact = "Newer fact", CreatedAt = new DateTimeOffset(2026, 2, 1, 0, 0, 0, TimeSpan.Zero) },
+            new() { RowKey = "f1", Fact = "Older fact", CreatedAt = new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero) }
+        });
+        var listing = await _executeTool("list_facts", null);
+
+        Assert.Contains("[f1] Older fact (saved ", listing);
+        Assert.Contains("[f2] Newer fact (saved ", listing);
+        Assert.Contains("2026", listing);
+        Assert.True(listing.IndexOf("f1", StringComparison.Ordinal) < listing.IndexOf("f2", StringComparison.Ordinal),
+            "facts must be listed oldest first");
+    }
+
+    [Fact]
+    public async Task ForgetFact_DeletesById()
+    {
+        var result = await _executeTool("forget_fact", Input(new { fact_id = "f1" }));
+
+        await _state.Received(1).DeleteUserFactAsync("f1");
+        Assert.Equal("Fact f1 forgotten.", result);
+    }
+
+    [Fact]
+    public async Task ForgetFact_WithoutId_ReturnsAnError()
+    {
+        var result = await _executeTool("forget_fact", Input(new { }));
+
+        Assert.Equal("Error: no fact_id provided.", result);
+        await _state.DidNotReceiveWithAnyArgs().DeleteUserFactAsync(default!);
     }
 
     // ---- Snoozes ----

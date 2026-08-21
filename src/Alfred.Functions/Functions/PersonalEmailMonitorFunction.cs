@@ -63,6 +63,7 @@ public class PersonalEmailMonitorFunction
 
             var suppressionRules = await _stateService.GetSuppressionRulesAsync();
             var attentionRules = await _stateService.GetAttentionRulesAsync();
+            var userFacts = await _stateService.GetUserFactsAsync();
 
             foreach (var email in newEmails)
             {
@@ -76,7 +77,7 @@ public class PersonalEmailMonitorFunction
                         ? await _stateService.GetPersonalEmailsByThreadAsync(email.ThreadId)
                         : [];
 
-                    var triage = await _summarizer.TriagePersonalEmailAsync(email, suppressionRules, attentionRules, threadContext);
+                    var triage = await _summarizer.TriagePersonalEmailAsync(email, suppressionRules, attentionRules, userFacts, threadContext);
 
                     if (triage.Suppressed)
                     {
@@ -219,6 +220,7 @@ public class PersonalEmailMonitorFunction
             {
                 var suppressionRules = await _stateService.GetSuppressionRulesAsync();
                 var attentionRules = await _stateService.GetAttentionRulesAsync();
+                var userFacts = await _stateService.GetUserFactsAsync();
 
                 foreach (var email in batch)
                 {
@@ -230,7 +232,7 @@ public class PersonalEmailMonitorFunction
                             ? await _stateService.GetPersonalEmailsByThreadAsync(email.ThreadId)
                             : [];
 
-                        var triage = await _summarizer.TriagePersonalEmailAsync(email, suppressionRules, attentionRules, threadContext);
+                        var triage = await _summarizer.TriagePersonalEmailAsync(email, suppressionRules, attentionRules, userFacts, threadContext);
 
                         if (!triage.Suppressed && string.IsNullOrWhiteSpace(triage.FraudWarning))
                             await _calendarService.ProcessPersonalEventsAsync(triage.CalendarEvents, email.MessageId);

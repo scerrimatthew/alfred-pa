@@ -165,6 +165,28 @@ public class InMemoryStateService : IStateService
         return Task.CompletedTask;
     }
 
+    private readonly Dictionary<string, UserFactEntity> _userFacts = new();
+
+    public Task<List<UserFactEntity>> GetUserFactsAsync() =>
+        Task.FromResult(_userFacts.Values.ToList());
+
+    public Task SaveUserFactAsync(string factId, string fact)
+    {
+        _userFacts[factId] = new UserFactEntity
+        {
+            RowKey = factId,
+            Fact = fact,
+            CreatedAt = DateTimeOffset.UtcNow
+        };
+        return Task.CompletedTask;
+    }
+
+    public Task DeleteUserFactAsync(string factId)
+    {
+        _userFacts.Remove(factId);
+        return Task.CompletedTask;
+    }
+
     public Task<List<ReportedNewsEntity>> GetReportedNewsSinceAsync(DateTimeOffset since) =>
         Task.FromResult(_reportedNews.Values.Where(e => e.ReportedAt >= since).ToList());
 

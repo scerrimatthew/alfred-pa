@@ -26,6 +26,7 @@ public class TableStorageStateServiceTests
     private readonly List<CalendarEventEntity> _calendarEvents = [];
     private readonly List<BackfillStateEntity> _backfillState = [];
     private readonly List<NewsRuleEntity> _newsRules = [];
+    private readonly List<UserFactEntity> _userFacts = [];
     private readonly List<ReportedNewsEntity> _reportedNews = [];
     private readonly List<NewsCandidateEntity> _newsCandidates = [];
     private readonly List<NewsRequestStateEntity> _newsRequests = [];
@@ -44,6 +45,7 @@ public class TableStorageStateServiceTests
         var calendarEventsClient = CreateTableClient(_calendarEvents);
         var backfillStateClient = CreateTableClient(_backfillState);
         var newsRulesClient = CreateTableClient(_newsRules);
+        var userFactsClient = CreateTableClient(_userFacts);
         var reportedNewsClient = CreateTableClient(_reportedNews);
         var newsCandidatesClient = CreateTableClient(_newsCandidates);
         var newsRequestsClient = CreateTableClient(_newsRequests);
@@ -59,6 +61,7 @@ public class TableStorageStateServiceTests
         serviceClient.GetTableClient("CalendarEvents").Returns(calendarEventsClient);
         serviceClient.GetTableClient("BackfillState").Returns(backfillStateClient);
         serviceClient.GetTableClient("NewsRules").Returns(newsRulesClient);
+        serviceClient.GetTableClient("UserFacts").Returns(userFactsClient);
         serviceClient.GetTableClient("ReportedNews").Returns(reportedNewsClient);
         serviceClient.GetTableClient("NewsCandidates").Returns(newsCandidatesClient);
         serviceClient.GetTableClient("NewsRequests").Returns(newsRequestsClient);
@@ -522,6 +525,45 @@ public class TableStorageStateServiceTests
 
         await _service.DeleteNewsRuleAsync("n1");
         Assert.Empty(await _service.GetNewsRulesAsync());
+    }
+
+    // ---- User facts ----
+
+    [Fact]
+    public async Task UserFacts_SaveListDeleteRoundTrip()
+    {
+        await _service.SaveUserFactAsync("f1", "Matthew's apartment at Hillcrest is A5 in Block A.");
+
+        var fact = Assert.Single(await _service.GetUserFactsAsync());
+        Assert.Equal("f1", fact.RowKey);
+        Assert.Equal("facts", fact.PartitionKey);
+        Assert.Equal("Matthew's apartment at Hillcrest is A5 in Block A.", fact.Fact);
+        Assert.True((DateTimeOffset.UtcNow - fact.CreatedAt).Duration() < TimeSpan.FromMinutes(1));
+
+        await _service.DeleteUserFactAsync("f1");
+        Assert.Empty(await _service.GetUserFactsAsync());
+    }
+
+    [Fact]
+    public async Task SaveUserFact_SameId_OverwritesInsteadOfDuplicating()
+    {
+        // The upsert semantics let a corrected fact replace the old one under its id
+        await _service.SaveUserFactAsync("f1", "The apartment is in Block B.");
+        await _service.SaveUserFactAsync("f1", "The apartment is in Block A.");
+
+        var fact = Assert.Single(_userFacts);
+        Assert.Equal("The apartment is in Block A.", fact.Fact);
+    }
+
+    [Fact]
+    public async Task GetUserFacts_IgnoresRowsOutsideTheFactsPartition()
+    {
+        _userFacts.Add(new UserFactEntity { PartitionKey = "facts", RowKey = "mine", Fact = "Keep me." });
+        _userFacts.Add(new UserFactEntity { PartitionKey = "other", RowKey = "stray", Fact = "Not a fact row." });
+
+        var results = await _service.GetUserFactsAsync();
+
+        Assert.Equal("mine", Assert.Single(results).RowKey);
     }
 
     [Fact]

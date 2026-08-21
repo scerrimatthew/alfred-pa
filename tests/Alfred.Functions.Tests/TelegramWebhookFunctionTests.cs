@@ -47,6 +47,7 @@ public class TelegramWebhookFunctionTests
         _state.GetReportedNewsSinceAsync(Arg.Any<DateTimeOffset>()).Returns(new List<ReportedNewsEntity>());
         _state.GetNewsCandidatesSinceAsync(Arg.Any<DateTimeOffset>()).Returns(new List<NewsCandidateEntity>());
         _state.GetNewsRulesAsync().Returns(new List<NewsRuleEntity>());
+        _state.GetUserFactsAsync().Returns(new List<UserFactEntity>());
         _state.GetNewsRequestAsync().Returns(_ => _newsMarker);
         _state.When(s => s.SaveNewsRequestAsync(Arg.Any<NewsRequestStateEntity>()))
             .Do(ci => _newsMarker = ci.Arg<NewsRequestStateEntity>());
@@ -59,7 +60,7 @@ public class TelegramWebhookFunctionTests
         _summarizer.AnswerPersonalQuestionAsync(
                 Arg.Any<string>(), Arg.Any<List<ProcessedEmailEntity>>(), Arg.Any<List<Event>>(),
                 Arg.Any<List<ProcessedEmailEntity>>(), Arg.Any<List<Event>>(), Arg.Any<List<ReportedNewsEntity>>(),
-                Arg.Any<List<ChatTurnEntity>>(),
+                Arg.Any<List<UserFactEntity>>(), Arg.Any<List<ChatTurnEntity>>(),
                 Arg.Any<Func<string, System.Text.Json.Nodes.JsonNode?, Task<string>>>())
             .Returns("personal answer");
         _newsResearch.ResearchDailyNewsAsync(
@@ -150,7 +151,7 @@ public class TelegramWebhookFunctionTests
         Assert.Equal(HttpStatusCode.OK, status);
         await _summarizer.DidNotReceiveWithAnyArgs().AnswerQuestionAsync(default!, default!, default!, default!);
         await _summarizer.DidNotReceiveWithAnyArgs().AnswerPersonalQuestionAsync(
-            default!, default!, default!, default!, default!, default!, default!, default!);
+            default!, default!, default!, default!, default!, default!, default!, default!, default!);
         await _notifications.DidNotReceiveWithAnyArgs().SendMessageAsync(default, default!);
     }
 
@@ -242,7 +243,7 @@ public class TelegramWebhookFunctionTests
         await _summarizer.Received(1).AnswerQuestionAsync(
             "what's on tomorrow?", Arg.Any<List<ProcessedEmailEntity>>(), Arg.Any<List<Event>>(), Arg.Any<List<ChatTurnEntity>>());
         await _summarizer.DidNotReceiveWithAnyArgs().AnswerPersonalQuestionAsync(
-            default!, default!, default!, default!, default!, default!, default!, default!);
+            default!, default!, default!, default!, default!, default!, default!, default!, default!);
         await _notifications.Received(1).SendMessageAsync(SchoolChatId, "school answer");
         await _state.Received(1).SaveChatTurnAsync(SchoolChatId, "what's on tomorrow?", "school answer");
     }
@@ -256,7 +257,7 @@ public class TelegramWebhookFunctionTests
             "any bills due?",
             Arg.Any<List<ProcessedEmailEntity>>(), Arg.Any<List<Event>>(),
             Arg.Any<List<ProcessedEmailEntity>>(), Arg.Any<List<Event>>(),
-            Arg.Any<List<ReportedNewsEntity>>(), Arg.Any<List<ChatTurnEntity>>(),
+            Arg.Any<List<ReportedNewsEntity>>(), Arg.Any<List<UserFactEntity>>(), Arg.Any<List<ChatTurnEntity>>(),
             Arg.Any<Func<string, System.Text.Json.Nodes.JsonNode?, Task<string>>>());
         await _notifications.Received(1).SendMessageAsync(PersonalChatId, "personal answer");
     }
@@ -277,7 +278,7 @@ public class TelegramWebhookFunctionTests
             "what was that DORA story?",
             Arg.Any<List<ProcessedEmailEntity>>(), Arg.Any<List<Event>>(),
             Arg.Any<List<ProcessedEmailEntity>>(), Arg.Any<List<Event>>(),
-            recentNews, Arg.Any<List<ChatTurnEntity>>(),
+            recentNews, Arg.Any<List<UserFactEntity>>(), Arg.Any<List<ChatTurnEntity>>(),
             Arg.Any<Func<string, System.Text.Json.Nodes.JsonNode?, Task<string>>>());
     }
 
@@ -287,6 +288,31 @@ public class TelegramWebhookFunctionTests
         await RunAsync(MessageUpdate(SchoolChatId, UserId, "what's on tomorrow?"));
 
         await _state.DidNotReceiveWithAnyArgs().GetReportedNewsSinceAsync(default);
+    }
+
+    [Fact]
+    public async Task PersonalChatQuestion_LoadsSavedFactsIntoTheContext()
+    {
+        var facts = new List<UserFactEntity> { new() { RowKey = "f1", Fact = "Matthew's apartment is A5 in Block A." } };
+        _state.GetUserFactsAsync().Returns(facts);
+
+        await RunAsync(MessageUpdate(PersonalChatId, UserId, "which block am I in?"));
+
+        // The saved facts must reach the summarizer verbatim
+        await _summarizer.Received(1).AnswerPersonalQuestionAsync(
+            "which block am I in?",
+            Arg.Any<List<ProcessedEmailEntity>>(), Arg.Any<List<Event>>(),
+            Arg.Any<List<ProcessedEmailEntity>>(), Arg.Any<List<Event>>(),
+            Arg.Any<List<ReportedNewsEntity>>(), facts, Arg.Any<List<ChatTurnEntity>>(),
+            Arg.Any<Func<string, System.Text.Json.Nodes.JsonNode?, Task<string>>>());
+    }
+
+    [Fact]
+    public async Task SchoolChatQuestion_NeverLoadsUserFacts()
+    {
+        await RunAsync(MessageUpdate(SchoolChatId, UserId, "what's on tomorrow?"));
+
+        await _state.DidNotReceive().GetUserFactsAsync();
     }
 
     [Fact]
@@ -577,7 +603,7 @@ public class TelegramWebhookFunctionTests
         await _state.Received(1).ClearNewsRequestAsync();
         // A command is not a question — the Q&A path must stay untouched
         await _summarizer.DidNotReceiveWithAnyArgs().AnswerPersonalQuestionAsync(
-            default!, default!, default!, default!, default!, default!, default!, default!);
+            default!, default!, default!, default!, default!, default!, default!, default!, default!);
     }
 
     [Fact]
@@ -702,7 +728,7 @@ public class TelegramWebhookFunctionTests
             Arg.Any<List<NewsRuleEntity>>(), Arg.Any<List<ReportedNewsEntity>>(),
             Arg.Any<List<NewsCandidateEntity>>(), expectedTopic);
         await _summarizer.DidNotReceiveWithAnyArgs().AnswerPersonalQuestionAsync(
-            default!, default!, default!, default!, default!, default!, default!, default!);
+            default!, default!, default!, default!, default!, default!, default!, default!, default!);
     }
 
     [Fact]
@@ -846,7 +872,7 @@ public class TelegramWebhookFunctionTests
             text,
             Arg.Any<List<ProcessedEmailEntity>>(), Arg.Any<List<Event>>(),
             Arg.Any<List<ProcessedEmailEntity>>(), Arg.Any<List<Event>>(),
-            Arg.Any<List<ReportedNewsEntity>>(), Arg.Any<List<ChatTurnEntity>>(),
+            Arg.Any<List<ReportedNewsEntity>>(), Arg.Any<List<UserFactEntity>>(), Arg.Any<List<ChatTurnEntity>>(),
             Arg.Any<Func<string, System.Text.Json.Nodes.JsonNode?, Task<string>>>());
     }
 
@@ -865,7 +891,7 @@ public class TelegramWebhookFunctionTests
         await _newsResearch.DidNotReceiveWithAnyArgs().ResearchDailyNewsAsync(default!, default!, default!, default);
         await _state.DidNotReceiveWithAnyArgs().SaveNewsRequestAsync(default!);
         await _summarizer.DidNotReceiveWithAnyArgs().AnswerPersonalQuestionAsync(
-            default!, default!, default!, default!, default!, default!, default!, default!);
+            default!, default!, default!, default!, default!, default!, default!, default!, default!);
     }
 
     // ---- /joke command ----
@@ -896,7 +922,7 @@ public class TelegramWebhookFunctionTests
         await _summarizer.Received(1).TellJokeAsync("", Arg.Any<List<string>>());
         await _notifications.Received(1).SendMessageAsync(PersonalChatId, "a joke");
         await _summarizer.DidNotReceiveWithAnyArgs().AnswerPersonalQuestionAsync(
-            default!, default!, default!, default!, default!, default!, default!, default!);
+            default!, default!, default!, default!, default!, default!, default!, default!, default!);
     }
 
     [Fact]
@@ -1021,7 +1047,7 @@ public class TelegramWebhookFunctionTests
                 PersonalChatId, Arg.Is<string>(m => m.Contains("GitHub__Token") && m.Contains("deploy")));
             // Routed as a command, never as a question
             await _summarizer.DidNotReceiveWithAnyArgs().AnswerPersonalQuestionAsync(
-                default!, default!, default!, default!, default!, default!, default!, default!);
+                default!, default!, default!, default!, default!, default!, default!, default!, default!);
         }
         finally
         {
@@ -1048,7 +1074,7 @@ public class TelegramWebhookFunctionTests
             "/deployment status?",
             Arg.Any<List<ProcessedEmailEntity>>(), Arg.Any<List<Event>>(),
             Arg.Any<List<ProcessedEmailEntity>>(), Arg.Any<List<Event>>(),
-            Arg.Any<List<ReportedNewsEntity>>(), Arg.Any<List<ChatTurnEntity>>(),
+            Arg.Any<List<ReportedNewsEntity>>(), Arg.Any<List<UserFactEntity>>(), Arg.Any<List<ChatTurnEntity>>(),
             Arg.Any<Func<string, System.Text.Json.Nodes.JsonNode?, Task<string>>>());
     }
 
@@ -1194,7 +1220,7 @@ public class TelegramWebhookFunctionTests
             await _notifications.Received(1).SendMessageAsync(PersonalChatId, "💳 the spend summary");
             // Routed as a command, never as a question
             await _summarizer.DidNotReceiveWithAnyArgs().AnswerPersonalQuestionAsync(
-                default!, default!, default!, default!, default!, default!, default!, default!);
+                default!, default!, default!, default!, default!, default!, default!, default!, default!);
         });
     }
 
@@ -1238,7 +1264,7 @@ public class TelegramWebhookFunctionTests
             "/costs anyone?",
             Arg.Any<List<ProcessedEmailEntity>>(), Arg.Any<List<Event>>(),
             Arg.Any<List<ProcessedEmailEntity>>(), Arg.Any<List<Event>>(),
-            Arg.Any<List<ReportedNewsEntity>>(), Arg.Any<List<ChatTurnEntity>>(),
+            Arg.Any<List<ReportedNewsEntity>>(), Arg.Any<List<UserFactEntity>>(), Arg.Any<List<ChatTurnEntity>>(),
             Arg.Any<Func<string, System.Text.Json.Nodes.JsonNode?, Task<string>>>());
     }
 

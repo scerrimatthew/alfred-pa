@@ -220,11 +220,12 @@ public class TelegramWebhookFunction
                 var personalActionsTask = _calendarService.GetUpcomingPersonalEventsAsync(_options.ChatLookbackDays);
                 var recentNewsTask = _stateService.GetReportedNewsSinceAsync(
                     DateTimeOffset.UtcNow.AddDays(-NewsChatLookbackDays));
+                var userFactsTask = _stateService.GetUserFactsAsync();
 
-                await Task.WhenAll(emailsTask, eventsTask, historyTask, personalEmailsTask, personalActionsTask, recentNewsTask);
+                await Task.WhenAll(emailsTask, eventsTask, historyTask, personalEmailsTask, personalActionsTask, recentNewsTask, userFactsTask);
 
-                _logger.LogInformation("Personal context loaded: {School} school + {Personal} personal emails, {Actions} actions, {News} news items, {Turns} chat turns",
-                    emailsTask.Result.Count, personalEmailsTask.Result.Count, personalActionsTask.Result.Count, recentNewsTask.Result.Count, historyTask.Result.Count);
+                _logger.LogInformation("Personal context loaded: {School} school + {Personal} personal emails, {Actions} actions, {News} news items, {Facts} facts, {Turns} chat turns",
+                    emailsTask.Result.Count, personalEmailsTask.Result.Count, personalActionsTask.Result.Count, recentNewsTask.Result.Count, userFactsTask.Result.Count, historyTask.Result.Count);
 
                 answer = await _summarizerService.AnswerPersonalQuestionAsync(
                     question,
@@ -233,6 +234,7 @@ public class TelegramWebhookFunction
                     personalEmailsTask.Result,
                     personalActionsTask.Result,
                     recentNewsTask.Result,
+                    userFactsTask.Result,
                     historyTask.Result,
                     ExecuteEmailToolAsync);
             }
@@ -964,6 +966,38 @@ public class TelegramWebhookFunction
 
                 await _stateService.DeleteNewsRuleAsync(ruleId);
                 return $"News preference {ruleId} removed.";
+            }
+
+            case "remember_fact":
+            {
+                var fact = input?["fact"]?.GetValue<string>();
+                if (string.IsNullOrWhiteSpace(fact))
+                    return "Error: no fact provided.";
+
+                fact = fact.Trim();
+                var factId = Guid.NewGuid().ToString("N")[..8];
+                await _stateService.SaveUserFactAsync(factId, fact);
+                return $"Fact {factId} saved: {fact}";
+            }
+
+            case "list_facts":
+            {
+                var facts = await _stateService.GetUserFactsAsync();
+                if (facts.Count == 0)
+                    return "No facts are saved.";
+
+                return string.Join("\n", facts.OrderBy(f => f.CreatedAt).Select(f =>
+                    $"[{f.RowKey}] {f.Fact} (saved {f.CreatedAt:d MMM yyyy})"));
+            }
+
+            case "forget_fact":
+            {
+                var factId = input?["fact_id"]?.GetValue<string>();
+                if (string.IsNullOrWhiteSpace(factId))
+                    return "Error: no fact_id provided.";
+
+                await _stateService.DeleteUserFactAsync(factId);
+                return $"Fact {factId} forgotten.";
             }
 
             case "snooze_email":

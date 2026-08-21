@@ -113,7 +113,7 @@ public class ClaudeSummarizerApiTests
             """));
 
         var rules = new List<SuppressionRuleEntity> { new() { RowKey = "r1", Pattern = "Monthly Bolt reports" } };
-        var triage = await _service.TriagePersonalEmailAsync(Email(subject: "GO bill"), rules, [], []);
+        var triage = await _service.TriagePersonalEmailAsync(Email(subject: "GO bill"), rules, [], [], []);
 
         Assert.True(triage.RequiresAttention);
         Assert.Equal("invoice", triage.Category);
@@ -295,7 +295,7 @@ public class ClaudeSummarizerApiTests
         _http.EnqueueJson(TextResponse("Nothing is due."));
 
         var answer = await _service.AnswerPersonalQuestionAsync(
-            "anything due?", [], [], [], [], [], [],
+            "anything due?", [], [], [], [], [], [], [],
             (_, _) => Task.FromResult("should never be called"));
 
         Assert.Equal("Nothing is due.", answer);
@@ -307,6 +307,9 @@ public class ClaudeSummarizerApiTests
         Assert.Contains("search_inbox", toolNames);
         Assert.Contains("draft_reply", toolNames);
         Assert.Contains("create_calendar_event", toolNames);
+        Assert.Contains("remember_fact", toolNames);
+        Assert.Contains("list_facts", toolNames);
+        Assert.Contains("forget_fact", toolNames);
         Assert.Contains("web_search", toolNames);
         // Web-search turns carry narration on top of the answer — the budget must cover it
         Assert.Equal(4096, body.GetProperty("max_tokens").GetInt32());
@@ -328,7 +331,7 @@ public class ClaudeSummarizerApiTests
         };
 
         await _service.AnswerPersonalQuestionAsync(
-            "what was that DORA story?", [], [], [], [], recentNews, [],
+            "what was that DORA story?", [], [], [], [], recentNews, [], [],
             (_, _) => Task.FromResult(""));
 
         var prompt = RequestUserText();
@@ -341,10 +344,48 @@ public class ClaudeSummarizerApiTests
     {
         _http.EnqueueJson(TextResponse("ok"));
 
-        await _service.AnswerPersonalQuestionAsync("q", [], [], [], [], [], [],
+        await _service.AnswerPersonalQuestionAsync("q", [], [], [], [], [], [], [],
             (_, _) => Task.FromResult(""));
 
         Assert.Contains("No AI news reported recently.", RequestUserText());
+    }
+
+    [Fact]
+    public async Task AnswerPersonalQuestion_SavedFactsRideInThePromptOldestFirst()
+    {
+        _http.EnqueueJson(TextResponse("Block A."));
+
+        var facts = new List<UserFactEntity>
+        {
+            new() { RowKey = "f2", Fact = "There is no Netflix subscription anymore.", CreatedAt = new DateTimeOffset(2026, 2, 1, 0, 0, 0, TimeSpan.Zero) },
+            new() { RowKey = "f1", Fact = "Matthew's apartment at Hillcrest is A5 in Block A.", CreatedAt = new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero) }
+        };
+
+        await _service.AnswerPersonalQuestionAsync(
+            "which block am I in?", [], [], [], [], [], facts, [],
+            (_, _) => Task.FromResult(""));
+
+        var prompt = RequestUserText();
+        Assert.Contains("## THINGS MATTHEW HAS TOLD ME", prompt);
+        // Ids ride along so forget_fact can target a fact from the listing
+        Assert.Contains("- id=f1 Matthew's apartment at Hillcrest is A5 in Block A.", prompt);
+        Assert.Contains("- id=f2 There is no Netflix subscription anymore.", prompt);
+        Assert.True(prompt.IndexOf("id=f1", StringComparison.Ordinal) < prompt.IndexOf("id=f2", StringComparison.Ordinal),
+            "facts must be listed oldest first");
+        Assert.DoesNotContain("Nothing saved yet.", prompt);
+    }
+
+    [Fact]
+    public async Task AnswerPersonalQuestion_NoSavedFacts_SaysSoInThePrompt()
+    {
+        _http.EnqueueJson(TextResponse("ok"));
+
+        await _service.AnswerPersonalQuestionAsync("q", [], [], [], [], [], [], [],
+            (_, _) => Task.FromResult(""));
+
+        var prompt = RequestUserText();
+        Assert.Contains("## THINGS MATTHEW HAS TOLD ME", prompt);
+        Assert.Contains("Nothing saved yet.", prompt);
     }
 
     [Fact]
@@ -367,7 +408,7 @@ public class ClaudeSummarizerApiTests
         }));
 
         var answer = await _service.AnswerPersonalQuestionAsync(
-            "tell me more", [], [], [], [], [], [],
+            "tell me more", [], [], [], [], [], [], [],
             (_, _) => Task.FromResult(""));
 
         Assert.Equal("Here's the read-out.", answer);
@@ -397,7 +438,7 @@ public class ClaudeSummarizerApiTests
         _http.EnqueueJson(TextResponse("Here's what I found."));
 
         var answer = await _service.AnswerPersonalQuestionAsync(
-            "look up the DORA study", [], [], [], [], [], [],
+            "look up the DORA study", [], [], [], [], [], [], [],
             (_, _) => Task.FromResult("client tools must not run for a paused search"));
 
         Assert.Equal("Here's what I found.", answer);
@@ -422,7 +463,7 @@ public class ClaudeSummarizerApiTests
 
         var executed = new List<(string Tool, JsonNode? Input)>();
         var answer = await _service.AnswerPersonalQuestionAsync(
-            "what have I snoozed?", [], [], [], [], [], [],
+            "what have I snoozed?", [], [], [], [], [], [], [],
             (tool, input) =>
             {
                 executed.Add((tool, input));
@@ -447,7 +488,7 @@ public class ClaudeSummarizerApiTests
         _http.EnqueueJson(TextResponse("That didn't work, sorry."));
 
         var answer = await _service.AnswerPersonalQuestionAsync(
-            "mark it unread", [], [], [], [], [], [],
+            "mark it unread", [], [], [], [], [], [], [],
             (_, _) => throw new InvalidOperationException("gmail exploded"));
 
         Assert.Equal("That didn't work, sorry.", answer);
@@ -461,7 +502,7 @@ public class ClaudeSummarizerApiTests
 
         var calls = 0;
         var answer = await _service.AnswerPersonalQuestionAsync(
-            "loop forever", [], [], [], [], [], [],
+            "loop forever", [], [], [], [], [], [], [],
             (_, _) =>
             {
                 calls++;
@@ -483,7 +524,7 @@ public class ClaudeSummarizerApiTests
         _http.RouteResponder("POST /v1/messages", _ => throw new TaskCanceledException("simulated budget cut-off"));
 
         var answer = await _service.AnswerPersonalQuestionAsync(
-            "big question", [], [], [], [], [], [],
+            "big question", [], [], [], [], [], [], [],
             (_, _) => Task.FromResult(""));
 
         Assert.Equal(
@@ -514,7 +555,7 @@ public class ClaudeSummarizerApiTests
             new() { Id = "ev42", Summary = "Deadline: Pay GO invoice", Start = new EventDateTime { Date = "2026-08-25" } }
         };
 
-        await _service.AnswerPersonalQuestionAsync("q", [], [], personalEmails, actions, [], [],
+        await _service.AnswerPersonalQuestionAsync("q", [], [], personalEmails, actions, [], [], [],
             (_, _) => Task.FromResult(""));
 
         var prompt = RequestUserText();

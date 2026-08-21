@@ -29,6 +29,7 @@ public class PersonalEmailMonitorFunctionTests
         _gmail.GetNewPersonalEmailsAsync().Returns([]);
         _state.GetSuppressionRulesAsync().Returns(new List<SuppressionRuleEntity>());
         _state.GetAttentionRulesAsync().Returns(new List<AttentionRuleEntity>());
+        _state.GetUserFactsAsync().Returns(new List<UserFactEntity>());
         _state.GetPersonalEmailsByThreadAsync(Arg.Any<string>()).Returns(new List<ProcessedEmailEntity>());
         _state.GetBackfillStateAsync().Returns((BackfillStateEntity?)null);
     }
@@ -62,7 +63,7 @@ public class PersonalEmailMonitorFunctionTests
     {
         var email = Email(messageId: "m1", threadId: "t1", subject: "GO bill");
         _gmail.GetNewPersonalEmailsAsync().Returns([email]);
-        _summarizer.TriagePersonalEmailAsync(email, Arg.Any<List<SuppressionRuleEntity>>(), Arg.Any<List<AttentionRuleEntity>>(), Arg.Any<List<ProcessedEmailEntity>>())
+        _summarizer.TriagePersonalEmailAsync(email, Arg.Any<List<SuppressionRuleEntity>>(), Arg.Any<List<AttentionRuleEntity>>(), Arg.Any<List<UserFactEntity>>(), Arg.Any<List<ProcessedEmailEntity>>())
             .Returns(Triage(requiresAttention: true, category: "invoice", telegramMessage: "Your GO bill is in."));
 
         string? message = null;
@@ -92,7 +93,7 @@ public class PersonalEmailMonitorFunctionTests
     {
         var email = Email(subject: "Vet appointment", senderName: "City Vet");
         _gmail.GetNewPersonalEmailsAsync().Returns([email]);
-        _summarizer.TriagePersonalEmailAsync(email, Arg.Any<List<SuppressionRuleEntity>>(), Arg.Any<List<AttentionRuleEntity>>(), Arg.Any<List<ProcessedEmailEntity>>())
+        _summarizer.TriagePersonalEmailAsync(email, Arg.Any<List<SuppressionRuleEntity>>(), Arg.Any<List<AttentionRuleEntity>>(), Arg.Any<List<UserFactEntity>>(), Arg.Any<List<ProcessedEmailEntity>>())
             .Returns(Triage(requiresAttention: true, summary: "Appointment confirmed for Friday.", telegramMessage: ""));
 
         await CreateFunction().Run(Timer);
@@ -107,7 +108,7 @@ public class PersonalEmailMonitorFunctionTests
     {
         var email = Email(messageId: "m1", subject: "Newsletter", senderEmail: "news@shop.com");
         _gmail.GetNewPersonalEmailsAsync().Returns([email]);
-        _summarizer.TriagePersonalEmailAsync(email, Arg.Any<List<SuppressionRuleEntity>>(), Arg.Any<List<AttentionRuleEntity>>(), Arg.Any<List<ProcessedEmailEntity>>())
+        _summarizer.TriagePersonalEmailAsync(email, Arg.Any<List<SuppressionRuleEntity>>(), Arg.Any<List<AttentionRuleEntity>>(), Arg.Any<List<UserFactEntity>>(), Arg.Any<List<ProcessedEmailEntity>>())
             .Returns(Triage(requiresAttention: false, category: "notification", summary: "Just a newsletter."));
 
         await CreateFunction().Run(Timer);
@@ -124,7 +125,7 @@ public class PersonalEmailMonitorFunctionTests
     {
         var email = Email(subject: "Newsletter");
         _gmail.GetNewPersonalEmailsAsync().Returns([email]);
-        _summarizer.TriagePersonalEmailAsync(email, Arg.Any<List<SuppressionRuleEntity>>(), Arg.Any<List<AttentionRuleEntity>>(), Arg.Any<List<ProcessedEmailEntity>>())
+        _summarizer.TriagePersonalEmailAsync(email, Arg.Any<List<SuppressionRuleEntity>>(), Arg.Any<List<AttentionRuleEntity>>(), Arg.Any<List<UserFactEntity>>(), Arg.Any<List<ProcessedEmailEntity>>())
             .Returns(Triage(requiresAttention: false, telegramMessage: "A quiet one."));
 
         await CreateFunction(o => o.NotifyAllPersonalEmails = true).Run(Timer);
@@ -142,7 +143,7 @@ public class PersonalEmailMonitorFunctionTests
             new() { Title = "Deadline: X", Description = "", Date = DateTime.Today.AddDays(3), Action = CalendarEventAction.Create }
         };
         _gmail.GetNewPersonalEmailsAsync().Returns([email]);
-        _summarizer.TriagePersonalEmailAsync(email, Arg.Any<List<SuppressionRuleEntity>>(), Arg.Any<List<AttentionRuleEntity>>(), Arg.Any<List<ProcessedEmailEntity>>())
+        _summarizer.TriagePersonalEmailAsync(email, Arg.Any<List<SuppressionRuleEntity>>(), Arg.Any<List<AttentionRuleEntity>>(), Arg.Any<List<UserFactEntity>>(), Arg.Any<List<ProcessedEmailEntity>>())
             .Returns(Triage(requiresAttention: true, suppressed: true, matchedRule: "r1", needsReply: true, calendarEvents: events));
 
         await CreateFunction().Run(Timer);
@@ -166,7 +167,7 @@ public class PersonalEmailMonitorFunctionTests
             new() { Title = "Deadline: Pay fake invoice", Description = "", Date = DateTime.Today.AddDays(2), Action = CalendarEventAction.Create }
         };
         _gmail.GetNewPersonalEmailsAsync().Returns([email]);
-        _summarizer.TriagePersonalEmailAsync(email, Arg.Any<List<SuppressionRuleEntity>>(), Arg.Any<List<AttentionRuleEntity>>(), Arg.Any<List<ProcessedEmailEntity>>())
+        _summarizer.TriagePersonalEmailAsync(email, Arg.Any<List<SuppressionRuleEntity>>(), Arg.Any<List<AttentionRuleEntity>>(), Arg.Any<List<UserFactEntity>>(), Arg.Any<List<ProcessedEmailEntity>>())
             .Returns(Triage(
                 requiresAttention: true,
                 telegramMessage: "An invoice from ACME.",
@@ -190,7 +191,7 @@ public class PersonalEmailMonitorFunctionTests
     {
         var email = Email(wasUnread: false);
         _gmail.GetNewPersonalEmailsAsync().Returns([email]);
-        _summarizer.TriagePersonalEmailAsync(email, Arg.Any<List<SuppressionRuleEntity>>(), Arg.Any<List<AttentionRuleEntity>>(), Arg.Any<List<ProcessedEmailEntity>>())
+        _summarizer.TriagePersonalEmailAsync(email, Arg.Any<List<SuppressionRuleEntity>>(), Arg.Any<List<AttentionRuleEntity>>(), Arg.Any<List<UserFactEntity>>(), Arg.Any<List<ProcessedEmailEntity>>())
             .Returns(Triage(requiresAttention: true, telegramMessage: "Important but already read."));
 
         await CreateFunction().Run(Timer);
@@ -206,13 +207,13 @@ public class PersonalEmailMonitorFunctionTests
         var earlier = new List<ProcessedEmailEntity> { ProcessedEmail(messageId: "m1", threadId: "t1") };
         _gmail.GetNewPersonalEmailsAsync().Returns([email]);
         _state.GetPersonalEmailsByThreadAsync("t1").Returns(earlier);
-        _summarizer.TriagePersonalEmailAsync(email, Arg.Any<List<SuppressionRuleEntity>>(), Arg.Any<List<AttentionRuleEntity>>(), Arg.Any<List<ProcessedEmailEntity>>())
+        _summarizer.TriagePersonalEmailAsync(email, Arg.Any<List<SuppressionRuleEntity>>(), Arg.Any<List<AttentionRuleEntity>>(), Arg.Any<List<UserFactEntity>>(), Arg.Any<List<ProcessedEmailEntity>>())
             .Returns(Triage());
 
         await CreateFunction().Run(Timer);
 
         await _summarizer.Received(1).TriagePersonalEmailAsync(
-            email, Arg.Any<List<SuppressionRuleEntity>>(), Arg.Any<List<AttentionRuleEntity>>(), earlier);
+            email, Arg.Any<List<SuppressionRuleEntity>>(), Arg.Any<List<AttentionRuleEntity>>(), Arg.Any<List<UserFactEntity>>(), earlier);
     }
 
     [Fact]
@@ -220,7 +221,7 @@ public class PersonalEmailMonitorFunctionTests
     {
         var email = Email(messageId: "m1", threadId: "m1");
         _gmail.GetNewPersonalEmailsAsync().Returns([email]);
-        _summarizer.TriagePersonalEmailAsync(email, Arg.Any<List<SuppressionRuleEntity>>(), Arg.Any<List<AttentionRuleEntity>>(), Arg.Any<List<ProcessedEmailEntity>>())
+        _summarizer.TriagePersonalEmailAsync(email, Arg.Any<List<SuppressionRuleEntity>>(), Arg.Any<List<AttentionRuleEntity>>(), Arg.Any<List<UserFactEntity>>(), Arg.Any<List<ProcessedEmailEntity>>())
             .Returns(Triage());
 
         await CreateFunction().Run(Timer);
@@ -233,7 +234,7 @@ public class PersonalEmailMonitorFunctionTests
     {
         var email = Email(messageId: "m1");
         _gmail.GetNewPersonalEmailsAsync().Returns([email]);
-        _summarizer.TriagePersonalEmailAsync(email, Arg.Any<List<SuppressionRuleEntity>>(), Arg.Any<List<AttentionRuleEntity>>(), Arg.Any<List<ProcessedEmailEntity>>())
+        _summarizer.TriagePersonalEmailAsync(email, Arg.Any<List<SuppressionRuleEntity>>(), Arg.Any<List<AttentionRuleEntity>>(), Arg.Any<List<UserFactEntity>>(), Arg.Any<List<ProcessedEmailEntity>>())
             .Returns(Triage(requiresAttention: true, telegramMessage: "Sarah wrote", needsReply: true));
 
         await CreateFunction().Run(Timer);
@@ -248,7 +249,7 @@ public class PersonalEmailMonitorFunctionTests
     {
         var email = Email(messageId: "m1", senderEmail: "x@y.com");
         _gmail.GetNewPersonalEmailsAsync().Returns([email]);
-        _summarizer.TriagePersonalEmailAsync(email, Arg.Any<List<SuppressionRuleEntity>>(), Arg.Any<List<AttentionRuleEntity>>(), Arg.Any<List<ProcessedEmailEntity>>())
+        _summarizer.TriagePersonalEmailAsync(email, Arg.Any<List<SuppressionRuleEntity>>(), Arg.Any<List<AttentionRuleEntity>>(), Arg.Any<List<UserFactEntity>>(), Arg.Any<List<ProcessedEmailEntity>>())
             .Returns(Triage());
         _state.RecordSenderSeenAsync(default!, default!, default, default, default)
             .ThrowsAsyncForAnyArgs(new TimeoutException("tables slow"));
@@ -265,9 +266,9 @@ public class PersonalEmailMonitorFunctionTests
         var bad = Email(messageId: "bad", subject: "Broken");
         var good = Email(messageId: "good");
         _gmail.GetNewPersonalEmailsAsync().Returns([bad, good]);
-        _summarizer.TriagePersonalEmailAsync(bad, Arg.Any<List<SuppressionRuleEntity>>(), Arg.Any<List<AttentionRuleEntity>>(), Arg.Any<List<ProcessedEmailEntity>>())
+        _summarizer.TriagePersonalEmailAsync(bad, Arg.Any<List<SuppressionRuleEntity>>(), Arg.Any<List<AttentionRuleEntity>>(), Arg.Any<List<UserFactEntity>>(), Arg.Any<List<ProcessedEmailEntity>>())
             .ThrowsAsync(new InvalidOperationException("boom"));
-        _summarizer.TriagePersonalEmailAsync(good, Arg.Any<List<SuppressionRuleEntity>>(), Arg.Any<List<AttentionRuleEntity>>(), Arg.Any<List<ProcessedEmailEntity>>())
+        _summarizer.TriagePersonalEmailAsync(good, Arg.Any<List<SuppressionRuleEntity>>(), Arg.Any<List<AttentionRuleEntity>>(), Arg.Any<List<UserFactEntity>>(), Arg.Any<List<ProcessedEmailEntity>>())
             .Returns(Triage());
 
         await CreateFunction().Run(Timer);
@@ -276,6 +277,27 @@ public class PersonalEmailMonitorFunctionTests
         await _state.Received(1).MarkPersonalEmailProcessedAsync(
             "good", Arg.Any<string>(), Arg.Any<string>(), Arg.Any<string>(), Arg.Any<string?>(),
             Arg.Any<bool>(), Arg.Any<string?>(), Arg.Any<string?>(), Arg.Any<bool>(), Arg.Any<DateTimeOffset?>());
+    }
+
+    [Fact]
+    public async Task SavedFacts_AreLoadedOncePerRunAndPassedToEveryTriage()
+    {
+        var first = Email(messageId: "m1");
+        var second = Email(messageId: "m2");
+        var facts = new List<UserFactEntity> { new() { RowKey = "f1", Fact = "Matthew's apartment is A5 in Block A." } };
+        _gmail.GetNewPersonalEmailsAsync().Returns([first, second]);
+        _state.GetUserFactsAsync().Returns(facts);
+        _summarizer.TriagePersonalEmailAsync(Arg.Any<SchoolEmail>(), Arg.Any<List<SuppressionRuleEntity>>(), Arg.Any<List<AttentionRuleEntity>>(), Arg.Any<List<UserFactEntity>>(), Arg.Any<List<ProcessedEmailEntity>>())
+            .Returns(Triage());
+
+        await CreateFunction().Run(Timer);
+
+        // The very list from state reaches each triage call — one fetch for the whole batch
+        await _summarizer.Received(1).TriagePersonalEmailAsync(
+            first, Arg.Any<List<SuppressionRuleEntity>>(), Arg.Any<List<AttentionRuleEntity>>(), facts, Arg.Any<List<ProcessedEmailEntity>>());
+        await _summarizer.Received(1).TriagePersonalEmailAsync(
+            second, Arg.Any<List<SuppressionRuleEntity>>(), Arg.Any<List<AttentionRuleEntity>>(), facts, Arg.Any<List<ProcessedEmailEntity>>());
+        await _state.Received(1).GetUserFactsAsync();
     }
 
     // ---- Newsletter-mined news leads ----
@@ -290,7 +312,7 @@ public class PersonalEmailMonitorFunctionTests
             new() { Headline = "Funding round", Url = null, Note = null }
         };
         _gmail.GetNewPersonalEmailsAsync().Returns([email]);
-        _summarizer.TriagePersonalEmailAsync(email, Arg.Any<List<SuppressionRuleEntity>>(), Arg.Any<List<AttentionRuleEntity>>(), Arg.Any<List<ProcessedEmailEntity>>())
+        _summarizer.TriagePersonalEmailAsync(email, Arg.Any<List<SuppressionRuleEntity>>(), Arg.Any<List<AttentionRuleEntity>>(), Arg.Any<List<UserFactEntity>>(), Arg.Any<List<ProcessedEmailEntity>>())
             .Returns(Triage(newsLeads: leads));
 
         List<NewsCandidateEntity>? saved = null;
@@ -314,7 +336,7 @@ public class PersonalEmailMonitorFunctionTests
     {
         var email = Email(messageId: "m1");
         _gmail.GetNewPersonalEmailsAsync().Returns([email]);
-        _summarizer.TriagePersonalEmailAsync(email, Arg.Any<List<SuppressionRuleEntity>>(), Arg.Any<List<AttentionRuleEntity>>(), Arg.Any<List<ProcessedEmailEntity>>())
+        _summarizer.TriagePersonalEmailAsync(email, Arg.Any<List<SuppressionRuleEntity>>(), Arg.Any<List<AttentionRuleEntity>>(), Arg.Any<List<UserFactEntity>>(), Arg.Any<List<ProcessedEmailEntity>>())
             .Returns(Triage());
 
         await CreateFunction().Run(Timer);
@@ -327,7 +349,7 @@ public class PersonalEmailMonitorFunctionTests
     {
         var email = Email(messageId: "m1", senderEmail: "news@tldr.tech");
         _gmail.GetNewPersonalEmailsAsync().Returns([email]);
-        _summarizer.TriagePersonalEmailAsync(email, Arg.Any<List<SuppressionRuleEntity>>(), Arg.Any<List<AttentionRuleEntity>>(), Arg.Any<List<ProcessedEmailEntity>>())
+        _summarizer.TriagePersonalEmailAsync(email, Arg.Any<List<SuppressionRuleEntity>>(), Arg.Any<List<AttentionRuleEntity>>(), Arg.Any<List<UserFactEntity>>(), Arg.Any<List<ProcessedEmailEntity>>())
             .Returns(Triage(newsLeads: [new NewsLead { Headline = "H" }]));
         _state.SaveNewsCandidatesAsync(Arg.Any<List<NewsCandidateEntity>>())
             .ThrowsAsync(new TimeoutException("tables slow"));
@@ -351,7 +373,7 @@ public class PersonalEmailMonitorFunctionTests
 
         _state.GetBackfillStateAsync().Returns(backfill);
         _gmail.GetBackfillBatchAsync(backfill.OldestDate, 20).Returns([old]);
-        _summarizer.TriagePersonalEmailAsync(old, Arg.Any<List<SuppressionRuleEntity>>(), Arg.Any<List<AttentionRuleEntity>>(), Arg.Any<List<ProcessedEmailEntity>>())
+        _summarizer.TriagePersonalEmailAsync(old, Arg.Any<List<SuppressionRuleEntity>>(), Arg.Any<List<AttentionRuleEntity>>(), Arg.Any<List<UserFactEntity>>(), Arg.Any<List<ProcessedEmailEntity>>())
             .Returns(Triage(requiresAttention: true, category: "invoice", telegramMessage: "would have alerted", needsReply: true));
 
         await CreateFunction().Run(Timer);
@@ -381,7 +403,7 @@ public class PersonalEmailMonitorFunctionTests
 
         _state.GetBackfillStateAsync().Returns(backfill);
         _gmail.GetBackfillBatchAsync(backfill.OldestDate, 20).Returns(batch);
-        _summarizer.TriagePersonalEmailAsync(Arg.Any<SchoolEmail>(), Arg.Any<List<SuppressionRuleEntity>>(), Arg.Any<List<AttentionRuleEntity>>(), Arg.Any<List<ProcessedEmailEntity>>())
+        _summarizer.TriagePersonalEmailAsync(Arg.Any<SchoolEmail>(), Arg.Any<List<SuppressionRuleEntity>>(), Arg.Any<List<AttentionRuleEntity>>(), Arg.Any<List<UserFactEntity>>(), Arg.Any<List<ProcessedEmailEntity>>())
             .Returns(Triage());
 
         await CreateFunction().Run(Timer);
@@ -417,7 +439,7 @@ public class PersonalEmailMonitorFunctionTests
 
         _state.GetBackfillStateAsync().Returns(backfill);
         _gmail.GetBackfillBatchAsync(backfill.OldestDate, 20).Returns([old]);
-        _summarizer.TriagePersonalEmailAsync(old, Arg.Any<List<SuppressionRuleEntity>>(), Arg.Any<List<AttentionRuleEntity>>(), Arg.Any<List<ProcessedEmailEntity>>())
+        _summarizer.TriagePersonalEmailAsync(old, Arg.Any<List<SuppressionRuleEntity>>(), Arg.Any<List<AttentionRuleEntity>>(), Arg.Any<List<UserFactEntity>>(), Arg.Any<List<ProcessedEmailEntity>>())
             .Returns(Triage(suppressed: true, calendarEvents: events));
 
         await CreateFunction().Run(Timer);
@@ -434,7 +456,7 @@ public class PersonalEmailMonitorFunctionTests
 
         _state.GetBackfillStateAsync().Returns(backfill);
         _gmail.GetBackfillBatchAsync(backfill.OldestDate, 20).Returns([old]);
-        _summarizer.TriagePersonalEmailAsync(old, Arg.Any<List<SuppressionRuleEntity>>(), Arg.Any<List<AttentionRuleEntity>>(), Arg.Any<List<ProcessedEmailEntity>>())
+        _summarizer.TriagePersonalEmailAsync(old, Arg.Any<List<SuppressionRuleEntity>>(), Arg.Any<List<AttentionRuleEntity>>(), Arg.Any<List<UserFactEntity>>(), Arg.Any<List<ProcessedEmailEntity>>())
             .Returns(Triage(newsLeads: [new NewsLead { Headline = "Old lead", Url = "https://old.example" }]));
 
         await CreateFunction().Run(Timer);
@@ -442,6 +464,26 @@ public class PersonalEmailMonitorFunctionTests
         await _state.DidNotReceiveWithAnyArgs().SaveNewsCandidatesAsync(default!);
         // The email itself was still processed normally
         await _state.ReceivedWithAnyArgs(1).MarkPersonalEmailProcessedAsync(default!, default!, default!, default!);
+    }
+
+    [Fact]
+    public async Task Backfill_AlsoPassesSavedFactsToTriage()
+    {
+        // Historical mail is judged with the same facts ("that notice is for Block B, not his")
+        var old = Email(messageId: "old1");
+        var backfill = new BackfillStateEntity { OldestDate = DateTimeOffset.UtcNow.AddDays(-60) };
+        var facts = new List<UserFactEntity> { new() { RowKey = "f1", Fact = "Matthew's apartment is A5 in Block A." } };
+
+        _state.GetBackfillStateAsync().Returns(backfill);
+        _state.GetUserFactsAsync().Returns(facts);
+        _gmail.GetBackfillBatchAsync(backfill.OldestDate, 20).Returns([old]);
+        _summarizer.TriagePersonalEmailAsync(old, Arg.Any<List<SuppressionRuleEntity>>(), Arg.Any<List<AttentionRuleEntity>>(), Arg.Any<List<UserFactEntity>>(), Arg.Any<List<ProcessedEmailEntity>>())
+            .Returns(Triage());
+
+        await CreateFunction().Run(Timer);
+
+        await _summarizer.Received(1).TriagePersonalEmailAsync(
+            old, Arg.Any<List<SuppressionRuleEntity>>(), Arg.Any<List<AttentionRuleEntity>>(), facts, Arg.Any<List<ProcessedEmailEntity>>());
     }
 
     [Fact]

@@ -13,11 +13,12 @@ public class ClaudeSummarizerPromptTests
         SchoolEmail email,
         List<SuppressionRuleEntity>? suppressionRules = null,
         List<AttentionRuleEntity>? attentionRules = null,
+        List<UserFactEntity>? userFacts = null,
         List<ProcessedEmailEntity>? threadContext = null)
     {
         return ClaudeSummarizerService.BuildTriagePrompt(
             email, "Wednesday, 19 August 2026", "",
-            suppressionRules ?? [], attentionRules ?? [], threadContext ?? []);
+            suppressionRules ?? [], attentionRules ?? [], userFacts ?? [], threadContext ?? []);
     }
 
     [Fact]
@@ -37,9 +38,10 @@ public class ClaudeSummarizerPromptTests
         Assert.Contains("Please pay €45.20", prompt);
         // Relative dates must resolve against the send date, stated as an ISO date
         Assert.Contains("2026-08-17", prompt);
-        // No rules or thread context configured — those sections must be absent
+        // No rules, facts, or thread context configured — those sections must be absent
         Assert.DoesNotContain("SUPPRESSION RULES", prompt);
         Assert.DoesNotContain("ATTENTION RULES", prompt);
+        Assert.DoesNotContain("THINGS MATTHEW HAS TOLD ALFRED", prompt);
         Assert.DoesNotContain("THREAD CONTEXT", prompt);
     }
 
@@ -83,6 +85,40 @@ public class ClaudeSummarizerPromptTests
         Assert.Contains("ATTENTION RULES", prompt);
         Assert.Contains("[a1] Anything from HSBC", prompt);
         Assert.Contains("Attention rules WIN over suppression rules", prompt);
+    }
+
+    [Fact]
+    public void TriagePrompt_UserFacts_AreListedWithTheFileQuietlyGuidance()
+    {
+        var facts = new List<UserFactEntity>
+        {
+            new() { RowKey = "f1", Fact = "Matthew's apartment at Hillcrest is A5 in Block A." },
+            new() { RowKey = "f2", Fact = "There is no Netflix subscription anymore." }
+        };
+
+        var prompt = BuildTriagePrompt(Email(), userFacts: facts);
+
+        Assert.Contains("THINGS MATTHEW HAS TOLD ALFRED", prompt);
+        Assert.Contains("- Matthew's apartment at Hillcrest is A5 in Block A.", prompt);
+        Assert.Contains("- There is no Netflix subscription anymore.", prompt);
+        // The contract: a fact showing the email doesn't apply means a quiet filing,
+        // and facts are never stretched beyond what they say
+        Assert.Contains("file it quietly", prompt);
+        Assert.Contains("Never stretch a fact beyond what it says.", prompt);
+    }
+
+    [Fact]
+    public void TriagePrompt_FactsComeBeforeTheRuleSections()
+    {
+        var facts = new List<UserFactEntity> { new() { RowKey = "f1", Fact = "A fact." } };
+        var rules = new List<SuppressionRuleEntity> { new() { RowKey = "r1", Pattern = "Bolt reports" } };
+
+        var prompt = BuildTriagePrompt(Email(), suppressionRules: rules, userFacts: facts);
+
+        Assert.True(
+            prompt.IndexOf("THINGS MATTHEW HAS TOLD ALFRED", StringComparison.Ordinal)
+                < prompt.IndexOf("SUPPRESSION RULES", StringComparison.Ordinal),
+            "facts must be presented before the rule sections they inform");
     }
 
     [Fact]

@@ -20,10 +20,12 @@ public class TableStorageStateService : IStateService
     private const string NewsCandidatesTable = "NewsCandidates";
     private const string NewsRequestsTable = "NewsRequests";
     private const string ProcessedUpdatesTable = "ProcessedUpdates";
+    private const string UserFactsTable = "UserFacts";
     private const string SchoolPartition = "emails";
     private const string PersonalPartition = "personal";
     private const string RulesPartition = "rules";
     private const string NewsPartition = "news";
+    private const string FactsPartition = "facts";
 
     private readonly TableServiceClient _tableServiceClient;
     private readonly ILogger<TableStorageStateService> _logger;
@@ -524,6 +526,54 @@ public class TableStorageStateService : IStateService
         {
             await tableClient.DeleteEntityAsync(RulesPartition, ruleId);
             _logger.LogInformation("Deleted news rule {RuleId}", ruleId);
+        }
+        catch (RequestFailedException ex) when (ex.Status == 404)
+        {
+            // Already gone, ignore
+        }
+    }
+
+    public async Task<List<UserFactEntity>> GetUserFactsAsync()
+    {
+        var tableClient = _tableServiceClient.GetTableClient(UserFactsTable);
+        await tableClient.CreateIfNotExistsAsync();
+
+        var results = new List<UserFactEntity>();
+        var query = tableClient.QueryAsync<UserFactEntity>(e => e.PartitionKey == FactsPartition);
+
+        await foreach (var entity in query)
+        {
+            results.Add(entity);
+        }
+
+        return results;
+    }
+
+    public async Task SaveUserFactAsync(string factId, string fact)
+    {
+        var tableClient = _tableServiceClient.GetTableClient(UserFactsTable);
+        await tableClient.CreateIfNotExistsAsync();
+
+        var entity = new UserFactEntity
+        {
+            RowKey = factId,
+            Fact = fact,
+            CreatedAt = DateTimeOffset.UtcNow
+        };
+
+        await tableClient.UpsertEntityAsync(entity);
+        _logger.LogInformation("Saved user fact {FactId}: {Fact}", factId, fact);
+    }
+
+    public async Task DeleteUserFactAsync(string factId)
+    {
+        var tableClient = _tableServiceClient.GetTableClient(UserFactsTable);
+        await tableClient.CreateIfNotExistsAsync();
+
+        try
+        {
+            await tableClient.DeleteEntityAsync(FactsPartition, factId);
+            _logger.LogInformation("Deleted user fact {FactId}", factId);
         }
         catch (RequestFailedException ex) when (ex.Status == 404)
         {
