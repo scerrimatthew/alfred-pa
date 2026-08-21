@@ -100,7 +100,7 @@ Emails read manually before the next poll are still processed by default (`Inclu
 
 ## Self-modification (/evolve)
 
-Sending `/evolve <instruction>` to the bot from the personal DM dispatches the `evolve` GitHub Actions workflow (`.github/workflows/evolve.yml`), which runs a headless Claude Code session against this repo, builds, commits, pushes, deploys to Azure, and reports back via Telegram. Requirements:
+Sending `/evolve <instruction>` to the bot from the personal DM dispatches the `evolve` GitHub Actions workflow (`.github/workflows/evolve.yml`), which runs a headless Claude Code session against this repo, builds, commits, pushes, deploys to Azure, and reports back via Telegram. The session's progress streams live into the Actions log (stream-json rendered by `.github/scripts/evolve-stream-filter.jq`) — feature-sized instructions legitimately take 30-60+ minutes, so a quiet-looking run is usually just working. The coding step times out at 90 minutes (which triggers the failure notification), and cancelling an in-progress run notifies Telegram too (a run cancelled while still queued behind another evolve run stays silent — its job never starts). Requirements:
 
 - Function app settings: `GitHub__Token` (fine-grained PAT with Actions read/write on this repo), `GitHub__Repo` (default: `scerrimatthew/alfred-pa`)
 - GitHub repo secrets: `ANTHROPIC_API_KEY`, `AZURE_FUNCTIONAPP_PUBLISH_PROFILE`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`
