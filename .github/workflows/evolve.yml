@@ -7,6 +7,14 @@ on:
         description: "What to change about Alfred"
         required: true
         type: string
+      model:
+        description: "Claude model for the coding session (sonnet is ~2.5x cheaper; pick opus for big or delicate features)"
+        required: false
+        type: choice
+        default: sonnet
+        options:
+          - sonnet
+          - opus
 
 permissions:
   contents: write
@@ -33,14 +41,18 @@ jobs:
       # subagent, coverage gate, adversarial review). The timeout catches a genuinely hung
       # session and fails the run so the Telegram failure notification fires; stream-json
       # through the filter makes progress visible live instead of buffering until the end.
+      # Sonnet by default: coding sessions are the app's single biggest credit burner
+      # (an hour-long Opus session costs real money), and Sonnet handles this codebase
+      # fine. The model input allows opting a big feature into opus.
       - name: Run Claude Code on the instruction
         timeout-minutes: 90
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
           INSTRUCTION: ${{ inputs.instruction }}
+          MODEL: ${{ inputs.model || 'sonnet' }}
         run: |
           set -o pipefail
-          claude -p "You are modifying Alfred, the personal-assistant Azure Functions app in this repo. Read CLAUDE.md first for the architecture and conventions. Matthew sent this instruction from Telegram: ${INSTRUCTION}. Make the change. Keep the build warning-free, follow existing code style, and update CLAUDE.md if behavior or settings change. Follow the 'Testing & merge rules' in CLAUDE.md: as the coding agent you must NOT modify anything under tests/ or the coverage gate; if the change needs new or updated tests, dispatch a subagent in the test-writer role (see .claude/agents/test-writer.md) which touches ONLY tests/. Before finishing, dispatch a subagent in the adversarial-reviewer role (see .claude/agents/adversarial-reviewer.md) to review your full change set and address its findings. All tests must pass before you finish. Do NOT commit, push, or deploy - the pipeline handles those." --dangerously-skip-permissions --output-format stream-json --verbose \
+          claude -p "You are modifying Alfred, the personal-assistant Azure Functions app in this repo. Read CLAUDE.md first for the architecture and conventions. Matthew sent this instruction from Telegram: ${INSTRUCTION}. Make the change. Keep the build warning-free, follow existing code style, and update CLAUDE.md if behavior or settings change. Follow the 'Testing & merge rules' in CLAUDE.md: as the coding agent you must NOT modify anything under tests/ or the coverage gate; if the change needs new or updated tests, dispatch a subagent in the test-writer role (see .claude/agents/test-writer.md) which touches ONLY tests/. Before finishing, dispatch a subagent in the adversarial-reviewer role (see .claude/agents/adversarial-reviewer.md) to review your full change set and address its findings. All tests must pass before you finish. Do NOT commit, push, or deploy - the pipeline handles those." --model "${MODEL}" --dangerously-skip-permissions --output-format stream-json --verbose \
             | jq -rR --unbuffered -f .github/scripts/evolve-stream-filter.jq
 
       - name: Build

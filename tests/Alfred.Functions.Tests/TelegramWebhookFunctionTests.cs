@@ -1723,9 +1723,66 @@ public class TelegramWebhookFunctionTests
         Assert.Equal("main", payload.GetProperty("ref").GetString());
         Assert.Equal("make the digest shorter",
             payload.GetProperty("inputs").GetProperty("instruction").GetString());
+        // Plain /evolve rides the cheap default tier
+        Assert.Equal("sonnet", payload.GetProperty("inputs").GetProperty("model").GetString());
 
         await _notifications.Received(1).SendMessageAsync(
-            PersonalChatId, Arg.Is<string>(m => m.Contains("started a coding session")));
+            PersonalChatId, Arg.Is<string>(m => m.Contains("started a coding session") && !m.Contains("Opus")));
+    }
+
+    [Theory]
+    [InlineData("/evolve opus make the digest shorter", "make the digest shorter")]
+    [InlineData("/evolve OPUS   make the digest shorter", "make the digest shorter")] // case-insensitive, extra spaces trimmed
+    [InlineData("/evolve opus\nrework the digest", "rework the digest")]  // multi-line Telegram message: newline separates too
+    [InlineData("/evolve opus\tfix the snooze parser", "fix the snooze parser")] // ...as does any other whitespace
+    public async Task Evolve_OpusPrefix_OptsTheSessionIntoOpusAndSaysSo(string text, string expectedInstruction)
+    {
+        _gitHubHttp.EnqueueResponder(_ => new HttpResponseMessage(HttpStatusCode.NoContent));
+
+        await WithGitHubEnvAsync("test-token-123", null, () =>
+            RunAsync(CreateFunctionWithGitHubSeam(), MessageUpdate(PersonalChatId, UserId, text)));
+
+        var payload = JsonDocument.Parse(Assert.Single(_gitHubHttp.Requests).Body!).RootElement;
+        Assert.Equal("opus", payload.GetProperty("inputs").GetProperty("model").GetString());
+        // The prefix is routing, not part of the instruction — stripped clean, with no
+        // leftover "opus" token and no leading whitespace
+        Assert.Equal(expectedInstruction,
+            payload.GetProperty("inputs").GetProperty("instruction").GetString());
+
+        // The ack must confirm the more expensive model was deliberately chosen
+        await _notifications.Received(1).SendMessageAsync(
+            PersonalChatId, Arg.Is<string>(m => m.Contains("(running it on Opus as asked)")));
+    }
+
+    [Theory]
+    [InlineData("/evolve opus")]
+    [InlineData("/evolve OPUS")]    // any casing
+    [InlineData("/evolve opus   ")] // trailing whitespace trims away to the same bare form
+    public async Task Evolve_BareOpus_AsksForAnInstructionInsteadOfDispatchingARunNamedOpus(string text)
+    {
+        // Token configured and the GitHub seam recording: if the handler wrongly treated
+        // "opus" as the instruction, the dispatch would land in _gitHubHttp.Requests
+        await WithGitHubEnvAsync("test-token-123", null, () =>
+            RunAsync(CreateFunctionWithGitHubSeam(), MessageUpdate(PersonalChatId, UserId, text)));
+
+        Assert.Empty(_gitHubHttp.Requests); // no workflow dispatch
+        await _notifications.Received(1).SendMessageAsync(
+            PersonalChatId, Arg.Is<string>(m => m.Contains("Tell me what to change")));
+    }
+
+    [Fact]
+    public async Task Evolve_WordMerelyStartingWithOpus_IsAnOrdinaryInstruction()
+    {
+        _gitHubHttp.EnqueueResponder(_ => new HttpResponseMessage(HttpStatusCode.NoContent));
+
+        await WithGitHubEnvAsync("test-token-123", null, () =>
+            RunAsync(CreateFunctionWithGitHubSeam(),
+                MessageUpdate(PersonalChatId, UserId, "/evolve opus-tier jokes should be rarer")));
+
+        var payload = JsonDocument.Parse(Assert.Single(_gitHubHttp.Requests).Body!).RootElement;
+        Assert.Equal("sonnet", payload.GetProperty("inputs").GetProperty("model").GetString());
+        Assert.Equal("opus-tier jokes should be rarer",
+            payload.GetProperty("inputs").GetProperty("instruction").GetString());
     }
 
     // ---- /cost command ----

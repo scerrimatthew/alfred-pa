@@ -904,6 +904,25 @@ public class TelegramWebhookFunction
     // headless Claude Code session against this repo, builds, commits, and redeploys
     private async Task HandleEvolveCommandAsync(long chatId, string instruction)
     {
+        // Sessions run on Sonnet by default (a fraction of Opus cost); "/evolve opus <instruction>"
+        // opts a big or delicate change into Opus. Any whitespace counts as the separator —
+        // Telegram messages are often multi-line, so "opus\n<instruction>" must match too.
+        var model = "sonnet";
+        if (instruction.Length > 4
+            && instruction.StartsWith("opus", StringComparison.OrdinalIgnoreCase)
+            && char.IsWhiteSpace(instruction[4]))
+        {
+            model = "opus";
+            instruction = instruction[4..].Trim();
+        }
+        else if (instruction.Equals("opus", StringComparison.OrdinalIgnoreCase))
+        {
+            // Bare "/evolve opus" — a model choice with no instruction falls through
+            // to the usage reply instead of dispatching a run titled "opus"
+            model = "opus";
+            instruction = "";
+        }
+
         if (string.IsNullOrWhiteSpace(instruction))
         {
             await _notificationService.SendMessageAsync(chatId,
@@ -922,16 +941,17 @@ public class TelegramWebhookFunction
 
         using var http = CreateGitHubHttpClient(token);
 
-        var payload = JsonSerializer.Serialize(new { @ref = "main", inputs = new { instruction } });
+        var payload = JsonSerializer.Serialize(new { @ref = "main", inputs = new { instruction, model } });
         var response = await http.PostAsync(
             $"https://api.github.com/repos/{repo}/actions/workflows/evolve.yml/dispatches",
             new StringContent(payload, System.Text.Encoding.UTF8, "application/json"));
 
         if (response.IsSuccessStatusCode)
         {
-            _logger.LogInformation("Evolve dispatched: {Instruction}", instruction);
+            _logger.LogInformation("Evolve dispatched on {Model}: {Instruction}", model, instruction);
+            var modelNote = model == "opus" ? " (running it on Opus as asked)" : "";
             await _notificationService.SendMessageAsync(chatId,
-                "On it — I've started a coding session for that change. I'll message you once it's built and deployed (usually 5-10 minutes).");
+                $"On it — I've started a coding session for that change{modelNote}. I'll message you once it's built and deployed (usually 5-10 minutes).");
         }
         else
         {
