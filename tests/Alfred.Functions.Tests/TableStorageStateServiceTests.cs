@@ -31,6 +31,11 @@ public class TableStorageStateServiceTests
     private readonly List<NewsCandidateEntity> _newsCandidates = [];
     private readonly List<NewsRequestStateEntity> _newsRequests = [];
     private readonly List<ProcessedUpdateEntity> _processedUpdates = [];
+    // The EtfHoldings table holds two entity shapes — the watchlist rows in the "etfs"
+    // partition and the one-off onboarding-nudge marker in "meta" — so both share one
+    // backing store, exactly like the real table where only the partition-scoped query
+    // keeps the marker out of the watchlist
+    private readonly List<ITableEntity> _etfTable = [];
 
     public TableStorageStateServiceTests()
     {
@@ -50,6 +55,9 @@ public class TableStorageStateServiceTests
         var newsCandidatesClient = CreateTableClient(_newsCandidates);
         var newsRequestsClient = CreateTableClient(_newsRequests);
         var processedUpdatesClient = CreateTableClient(_processedUpdates);
+        var etfHoldingsClient = Substitute.For<TableClient>();
+        ConfigureStore<EtfHoldingEntity>(etfHoldingsClient, _etfTable);
+        ConfigureStore<EtfNudgeEntity>(etfHoldingsClient, _etfTable);
 
         var serviceClient = Substitute.For<TableServiceClient>();
         serviceClient.GetTableClient("ProcessedEmails").Returns(processedEmailsClient);
@@ -66,8 +74,68 @@ public class TableStorageStateServiceTests
         serviceClient.GetTableClient("NewsCandidates").Returns(newsCandidatesClient);
         serviceClient.GetTableClient("NewsRequests").Returns(newsRequestsClient);
         serviceClient.GetTableClient("ProcessedUpdates").Returns(processedUpdatesClient);
+        serviceClient.GetTableClient("EtfHoldings").Returns(etfHoldingsClient);
 
         _service = new TableStorageStateService(serviceClient, NullLogger<TableStorageStateService>.Instance);
+    }
+
+    // Configures one entity shape on a table client backed by a mixed store, so several
+    // shapes can share a table the way EtfHoldings does. Row identity is by partition +
+    // row key across ALL shapes (the real table has no idea about .NET types), and a query
+    // sees every row projected into the queried shape — so a predicate that forgot its
+    // partition filter would pick up the other shape's rows, just like in production.
+    private static void ConfigureStore<T>(TableClient client, List<ITableEntity> store)
+        where T : class, ITableEntity, new()
+    {
+        client.QueryAsync(Arg.Any<Expression<Func<T, bool>>>(), Arg.Any<int?>(), Arg.Any<IEnumerable<string>>(), Arg.Any<CancellationToken>())
+            .Returns(ci =>
+            {
+                var filter = ci.Arg<Expression<Func<T, bool>>>().Compile();
+                var rows = store
+                    .Select(e => e as T ?? new T { PartitionKey = e.PartitionKey, RowKey = e.RowKey })
+                    .Where(filter)
+                    .ToList();
+                var page = Page<T>.FromValues(rows, null, Substitute.For<Response>());
+                return AsyncPageable<T>.FromPages([page]);
+            });
+
+        client.GetEntityAsync<T>(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<IEnumerable<string>>(), Arg.Any<CancellationToken>())
+            .Returns(ci =>
+            {
+                var found = store.OfType<T>().FirstOrDefault(
+                    e => e.PartitionKey == ci.ArgAt<string>(0) && e.RowKey == ci.ArgAt<string>(1));
+                return found is not null
+                    ? Response.FromValue(found, Substitute.For<Response>())
+                    : throw new RequestFailedException(404, "Not Found");
+            });
+
+        client.AddEntityAsync(Arg.Any<T>(), Arg.Any<CancellationToken>())
+            .Returns(ci =>
+            {
+                var entity = ci.Arg<T>();
+                if (store.Any(e => e.PartitionKey == entity.PartitionKey && e.RowKey == entity.RowKey))
+                    throw new RequestFailedException(409, "Conflict");
+                store.Add(entity);
+                return Substitute.For<Response>();
+            });
+
+        client.UpsertEntityAsync(Arg.Any<T>(), Arg.Any<TableUpdateMode>(), Arg.Any<CancellationToken>())
+            .Returns(ci =>
+            {
+                var entity = ci.Arg<T>();
+                store.RemoveAll(e => e.PartitionKey == entity.PartitionKey && e.RowKey == entity.RowKey);
+                store.Add(entity);
+                return Substitute.For<Response>();
+            });
+
+        client.DeleteEntityAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<ETag>(), Arg.Any<CancellationToken>())
+            .Returns(ci =>
+            {
+                // Like the real table: deleting a row that isn't there is a 404, not a no-op
+                if (store.RemoveAll(e => e.PartitionKey == ci.ArgAt<string>(0) && e.RowKey == ci.ArgAt<string>(1)) == 0)
+                    throw new RequestFailedException(404, "Not Found");
+                return Substitute.For<Response>();
+            });
     }
 
     private static TableClient CreateTableClient<T>(List<T> store) where T : class, ITableEntity, new()
@@ -116,7 +184,9 @@ public class TableStorageStateServiceTests
         client.DeleteEntityAsync(Arg.Any<string>(), Arg.Any<string>(), Arg.Any<ETag>(), Arg.Any<CancellationToken>())
             .Returns(ci =>
             {
-                store.RemoveAll(e => e.PartitionKey == ci.ArgAt<string>(0) && e.RowKey == ci.ArgAt<string>(1));
+                // Like the real table: deleting a row that isn't there is a 404, not a no-op
+                if (store.RemoveAll(e => e.PartitionKey == ci.ArgAt<string>(0) && e.RowKey == ci.ArgAt<string>(1)) == 0)
+                    throw new RequestFailedException(404, "Not Found");
                 return Substitute.For<Response>();
             });
 
@@ -837,5 +907,285 @@ public class TableStorageStateServiceTests
 
         await _service.ClearBackfillStateAsync();
         Assert.Null(await _service.GetBackfillStateAsync());
+    }
+
+    // ---- ETF watchlist ----
+
+    [Theory]
+    [InlineData("vwce", "VWCE")]
+    [InlineData("  VWCE  ", "VWCE")]
+    [InlineData("sxr8.de", "SXR8.DE")]
+    [InlineData("brk-b", "BRK-B")]
+    [InlineData("etf_1", "ETF_1")]
+    [InlineData("VW CE", "VWCE")]        // spaces a row key can't hold are stripped
+    [InlineData("VW/CE", "VWCE")]        // ...as are the characters Table Storage rejects
+    [InlineData("$$$", "UNKNOWN")]       // nothing usable left
+    [InlineData("", "UNKNOWN")]
+    [InlineData("   ", "UNKNOWN")]
+    public void EtfKey_NormalizesTickersSoTheSameFundLandsOnOneRow(string symbol, string expected)
+    {
+        Assert.Equal(expected, TableStorageStateService.EtfKey(symbol));
+    }
+
+    [Fact]
+    public async Task SaveEtfHolding_StoresTheTickerAsTypedUnderItsNormalizedKey()
+    {
+        await _service.SaveEtfHoldingAsync(" vwce ", " Vanguard FTSE All-World ", " core holding ");
+
+        var saved = Assert.Single(_etfTable.OfType<EtfHoldingEntity>());
+        Assert.Equal("etfs", saved.PartitionKey);
+        Assert.Equal("VWCE", saved.RowKey);
+        Assert.Equal("vwce", saved.Symbol);
+        Assert.Equal("Vanguard FTSE All-World", saved.Name);
+        Assert.Equal("core holding", saved.Notes);
+        Assert.True((DateTimeOffset.UtcNow - saved.CreatedAt).Duration() < TimeSpan.FromMinutes(1));
+    }
+
+    [Fact]
+    public async Task SaveEtfHolding_ReAdding_KeepsTheOriginalDateAndTheReportedHistory()
+    {
+        var createdAt = new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero);
+        var reportedAt = new DateTimeOffset(2026, 8, 8, 9, 0, 0, TimeSpan.Zero);
+        _etfTable.Add(new EtfHoldingEntity
+        {
+            RowKey = "VWCE", Symbol = "VWCE", Name = "Vanguard FTSE All-World", Notes = "core holding",
+            CreatedAt = createdAt, LastQuote = "€128.42", LastWeekChangePercent = -1.4, LastReportedAt = reportedAt
+        });
+
+        // Re-added from chat with only a note this time
+        await _service.SaveEtfHoldingAsync("VWCE", null, "monthly DCA");
+
+        var saved = Assert.Single(_etfTable.OfType<EtfHoldingEntity>());
+        Assert.Equal(createdAt, saved.CreatedAt);          // watchlist order is preserved
+        Assert.Equal("Vanguard FTSE All-World", saved.Name); // not blanked by the omitted argument
+        Assert.Equal("monthly DCA", saved.Notes);            // the new note wins
+        Assert.Equal("€128.42", saved.LastQuote);            // last week's snapshot survives
+        Assert.Equal(-1.4, saved.LastWeekChangePercent);
+        Assert.Equal(reportedAt, saved.LastReportedAt);
+    }
+
+    [Fact]
+    public async Task GetEtfHoldings_ReturnsOnlyTheEtfPartition()
+    {
+        _etfTable.Add(new EtfHoldingEntity { RowKey = "VWCE", Symbol = "VWCE" });
+        _etfTable.Add(new EtfHoldingEntity { PartitionKey = "something-else", RowKey = "IWDA", Symbol = "IWDA" });
+
+        var holdings = await _service.GetEtfHoldingsAsync();
+
+        Assert.Equal("VWCE", Assert.Single(holdings).Symbol);
+    }
+
+    [Fact]
+    public async Task DeleteEtfHolding_RemovesTheNormalizedRow()
+    {
+        _etfTable.Add(new EtfHoldingEntity { RowKey = "VWCE", Symbol = "VWCE" });
+        _etfTable.Add(new EtfHoldingEntity { RowKey = "IWDA", Symbol = "IWDA" });
+
+        await _service.DeleteEtfHoldingAsync(" vwce ");
+
+        Assert.Equal("IWDA", Assert.Single(_etfTable.OfType<EtfHoldingEntity>()).RowKey);
+    }
+
+    [Fact]
+    public async Task DeleteEtfHolding_ThatIsNotTracked_IsANoOp()
+    {
+        await _service.DeleteEtfHoldingAsync("VWCE");
+
+        Assert.Empty(_etfTable);
+    }
+
+    [Fact]
+    public async Task SaveEtfSnapshots_RecordsThisWeeksFiguresOnTheTrackedFunds()
+    {
+        var createdAt = new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero);
+        _etfTable.Add(new EtfHoldingEntity { RowKey = "VWCE", Symbol = "VWCE", CreatedAt = createdAt });
+
+        await _service.SaveEtfSnapshotsAsync([
+            new EtfPerformance { Symbol = "vwce", Name = "Vanguard FTSE All-World", Quote = "€128.42", WeekChangePercent = -1.4 }
+        ]);
+
+        var saved = Assert.Single(_etfTable.OfType<EtfHoldingEntity>());
+        Assert.Equal("€128.42", saved.LastQuote);
+        Assert.Equal(-1.4, saved.LastWeekChangePercent);
+        Assert.NotNull(saved.LastReportedAt);
+        Assert.True((DateTimeOffset.UtcNow - saved.LastReportedAt!.Value).Duration() < TimeSpan.FromMinutes(1));
+        // A name learned during research fills the blank...
+        Assert.Equal("Vanguard FTSE All-World", saved.Name);
+        Assert.Equal(createdAt, saved.CreatedAt);
+    }
+
+    [Fact]
+    public async Task SaveEtfSnapshots_NeverOverwritesANameMatthewChose()
+    {
+        _etfTable.Add(new EtfHoldingEntity { RowKey = "VWCE", Symbol = "VWCE", Name = "My world tracker" });
+
+        await _service.SaveEtfSnapshotsAsync([
+            new EtfPerformance { Symbol = "VWCE", Name = "Vanguard FTSE All-World UCITS ETF" }
+        ]);
+
+        Assert.Equal("My world tracker", Assert.Single(_etfTable.OfType<EtfHoldingEntity>()).Name);
+    }
+
+    [Fact]
+    public async Task SaveEtfSnapshots_IgnoresSymbolsThatArentTracked()
+    {
+        _etfTable.Add(new EtfHoldingEntity { RowKey = "VWCE", Symbol = "VWCE" });
+
+        // An ad-hoc "/etf VUSA" must not add VUSA to the watchlist behind Matthew's back
+        await _service.SaveEtfSnapshotsAsync([
+            new EtfPerformance { Symbol = "VWCE", Quote = "€128.42" },
+            new EtfPerformance { Symbol = "VUSA", Quote = "$95.10" }
+        ]);
+
+        var saved = Assert.Single(_etfTable.OfType<EtfHoldingEntity>());
+        Assert.Equal("VWCE", saved.RowKey);
+        Assert.Equal("€128.42", saved.LastQuote);
+    }
+
+    [Fact]
+    public async Task SaveEtfSnapshots_WithNothingToRecord_LeavesTheTableAlone()
+    {
+        await _service.SaveEtfSnapshotsAsync([]);
+
+        Assert.Empty(_etfTable);
+    }
+
+    [Fact]
+    public async Task EtfRequest_SaveGetClearRoundTrip_OnItsOwnRowKey()
+    {
+        Assert.Null(await _service.GetEtfRequestAsync());
+
+        var requestedAt = DateTimeOffset.UtcNow;
+        await _service.SaveEtfRequestAsync(new NewsRequestStateEntity { RequestedAt = requestedAt });
+
+        var loaded = await _service.GetEtfRequestAsync();
+        Assert.NotNull(loaded);
+        Assert.Equal(requestedAt, loaded.RequestedAt);
+        Assert.Equal("etf-request", Assert.Single(_newsRequests).RowKey);
+
+        await _service.ClearEtfRequestAsync();
+        Assert.Null(await _service.GetEtfRequestAsync());
+    }
+
+    [Fact]
+    public async Task EtfAndNewsRequests_AreIndependentMarkers()
+    {
+        // A research sweep for one must never look in flight — or be cleared — by the other
+        await _service.SaveNewsRequestAsync(new NewsRequestStateEntity { RequestedAt = DateTimeOffset.UtcNow, Topic = "EU AI Act" });
+        await _service.SaveEtfRequestAsync(new NewsRequestStateEntity { RequestedAt = DateTimeOffset.UtcNow });
+
+        Assert.Equal(2, _newsRequests.Count);
+
+        await _service.ClearEtfRequestAsync();
+
+        Assert.Null(await _service.GetEtfRequestAsync());
+        var news = await _service.GetNewsRequestAsync();
+        Assert.NotNull(news);
+        Assert.Equal("EU AI Act", news.Topic);
+    }
+
+    [Fact]
+    public async Task ClearEtfRequest_WithoutAMarker_IsANoOp()
+    {
+        await _service.ClearEtfRequestAsync();
+
+        Assert.Empty(_newsRequests);
+    }
+
+    [Fact]
+    public async Task TryClaimEtfNudge_SucceedsOnceAndNeverAgain()
+    {
+        Assert.True(await _service.TryClaimEtfNudgeAsync());
+
+        var claim = Assert.Single(_etfTable.OfType<EtfNudgeEntity>());
+        Assert.Equal("meta", claim.PartitionKey);
+        Assert.Equal("onboarding-nudge", claim.RowKey);
+        Assert.True((DateTimeOffset.UtcNow - claim.SentAt).Duration() < TimeSpan.FromMinutes(1));
+
+        // The second Saturday (and every one after) must find the row already there
+        Assert.False(await _service.TryClaimEtfNudgeAsync());
+        Assert.False(await _service.TryClaimEtfNudgeAsync());
+        Assert.Single(_etfTable.OfType<EtfNudgeEntity>());
+    }
+
+    [Fact]
+    public async Task EtfNudgeMarker_IsInvisibleToTheWatchlist()
+    {
+        _etfTable.Add(new EtfHoldingEntity { RowKey = "VWCE", Symbol = "VWCE" });
+        await _service.TryClaimEtfNudgeAsync();
+
+        // It shares the EtfHoldings table, so only the partition filter keeps it out of
+        // the watchlist — a report covering a fund called "onboarding-nudge" would be a mess
+        var holdings = await _service.GetEtfHoldingsAsync();
+
+        Assert.Equal("VWCE", Assert.Single(holdings).Symbol);
+    }
+
+    [Fact]
+    public async Task EtfNudgeMarker_IsNotDisturbedByWatchlistWrites()
+    {
+        await _service.TryClaimEtfNudgeAsync();
+
+        await _service.SaveEtfHoldingAsync("VWCE", null, null);
+        await _service.DeleteEtfHoldingAsync("VWCE");
+        await _service.SaveEtfSnapshotsAsync([new EtfPerformance { Symbol = "VWCE", Quote = "€1" }]);
+
+        // A cleared watchlist must not resurrect the one-off nudge
+        Assert.Single(_etfTable.OfType<EtfNudgeEntity>());
+        Assert.False(await _service.TryClaimEtfNudgeAsync());
+    }
+
+    [Fact]
+    public async Task ReleaseEtfNudge_HandsTheClaimBackSoItCanBeSentAgain()
+    {
+        Assert.True(await _service.TryClaimEtfNudgeAsync());
+
+        await _service.ReleaseEtfNudgeAsync();
+
+        Assert.Empty(_etfTable.OfType<EtfNudgeEntity>());
+        // The whole point: a nudge that failed to send can be attempted next Saturday
+        Assert.True(await _service.TryClaimEtfNudgeAsync());
+    }
+
+    [Fact]
+    public async Task ReleaseEtfNudge_WithoutAClaim_IsANoOp()
+    {
+        await _service.ReleaseEtfNudgeAsync();
+
+        Assert.Empty(_etfTable);
+    }
+
+    [Fact]
+    public async Task ReleaseEtfNudge_LeavesTheWatchlistAlone()
+    {
+        _etfTable.Add(new EtfHoldingEntity { RowKey = "VWCE", Symbol = "VWCE" });
+        await _service.TryClaimEtfNudgeAsync();
+
+        await _service.ReleaseEtfNudgeAsync();
+
+        Assert.Equal("VWCE", Assert.Single(_etfTable.OfType<EtfHoldingEntity>()).Symbol);
+    }
+
+    [Fact]
+    public async Task SaveNewsRequest_ForcesItsOwnRowKey_SoAnEtfMarkerCannotBeOverwritten()
+    {
+        // The two markers share a table; an entity carrying the wrong row key must not be
+        // able to land on the other command's row
+        await _service.SaveEtfRequestAsync(new NewsRequestStateEntity { RequestedAt = DateTimeOffset.UtcNow });
+        await _service.SaveNewsRequestAsync(new NewsRequestStateEntity
+        {
+            RowKey = "etf-request",
+            RequestedAt = DateTimeOffset.UtcNow,
+            Topic = "EU AI Act"
+        });
+
+        Assert.Equal(2, _newsRequests.Count);
+        var news = await _service.GetNewsRequestAsync();
+        Assert.NotNull(news);
+        Assert.Equal("EU AI Act", news.Topic);
+
+        var etf = await _service.GetEtfRequestAsync();
+        Assert.NotNull(etf);
+        Assert.Null(etf.Topic); // the ETF marker is untouched
     }
 }

@@ -44,6 +44,15 @@ public interface IStateService
     Task<NewsRequestStateEntity?> GetNewsRequestAsync();
     Task SaveNewsRequestAsync(NewsRequestStateEntity entity);
     Task ClearNewsRequestAsync();
+    Task<List<EtfHoldingEntity>> GetEtfHoldingsAsync();
+    Task SaveEtfHoldingAsync(string symbol, string? name, string? notes);
+    Task DeleteEtfHoldingAsync(string symbol);
+    Task SaveEtfSnapshotsAsync(List<EtfPerformance> items);
+    Task<bool> TryClaimEtfNudgeAsync();
+    Task ReleaseEtfNudgeAsync();
+    Task<NewsRequestStateEntity?> GetEtfRequestAsync();
+    Task SaveEtfRequestAsync(NewsRequestStateEntity entity);
+    Task ClearEtfRequestAsync();
     Task<bool> TryClaimUpdateAsync(long updateId);
     Task<List<ProcessedEmailEntity>> GetEmailsSinceAsync(DateTimeOffset since);
     Task<List<ProcessedEmailEntity>> GetPersonalEmailsSinceAsync(DateTimeOffset since);

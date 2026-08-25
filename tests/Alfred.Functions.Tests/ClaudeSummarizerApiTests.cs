@@ -310,6 +310,9 @@ public class ClaudeSummarizerApiTests
         Assert.Contains("remember_fact", toolNames);
         Assert.Contains("list_facts", toolNames);
         Assert.Contains("forget_fact", toolNames);
+        Assert.Contains("add_etf", toolNames);
+        Assert.Contains("list_etfs", toolNames);
+        Assert.Contains("remove_etf", toolNames);
         Assert.Contains("web_search", toolNames);
         // Web-search turns carry narration on top of the answer — the budget must cover it
         Assert.Equal(4096, body.GetProperty("max_tokens").GetInt32());

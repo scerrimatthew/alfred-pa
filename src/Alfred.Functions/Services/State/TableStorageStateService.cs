@@ -21,11 +21,15 @@ public class TableStorageStateService : IStateService
     private const string NewsRequestsTable = "NewsRequests";
     private const string ProcessedUpdatesTable = "ProcessedUpdates";
     private const string UserFactsTable = "UserFacts";
+    private const string EtfHoldingsTable = "EtfHoldings";
     private const string SchoolPartition = "emails";
     private const string PersonalPartition = "personal";
     private const string RulesPartition = "rules";
     private const string NewsPartition = "news";
     private const string FactsPartition = "facts";
+    private const string EtfPartition = "etfs";
+    private const string NewsRequestRow = "news-request";
+    private const string EtfRequestRow = "etf-request";
 
     private readonly TableServiceClient _tableServiceClient;
     private readonly ILogger<TableStorageStateService> _logger;
@@ -697,14 +701,36 @@ public class TableStorageStateService : IStateService
         return results;
     }
 
-    public async Task<NewsRequestStateEntity?> GetNewsRequestAsync()
+    public Task<NewsRequestStateEntity?> GetNewsRequestAsync() => GetRequestMarkerAsync(NewsRequestRow);
+
+    public Task SaveNewsRequestAsync(NewsRequestStateEntity entity)
+    {
+        entity.RowKey = NewsRequestRow;
+        return SaveRequestMarkerAsync(entity);
+    }
+
+    public Task ClearNewsRequestAsync() => ClearRequestMarkerAsync(NewsRequestRow);
+
+    // The on-demand ETF report uses the same single-row marker mechanism as /ai-news,
+    // under its own row key, so an impatient re-send doesn't start a second research run
+    public Task<NewsRequestStateEntity?> GetEtfRequestAsync() => GetRequestMarkerAsync(EtfRequestRow);
+
+    public Task SaveEtfRequestAsync(NewsRequestStateEntity entity)
+    {
+        entity.RowKey = EtfRequestRow;
+        return SaveRequestMarkerAsync(entity);
+    }
+
+    public Task ClearEtfRequestAsync() => ClearRequestMarkerAsync(EtfRequestRow);
+
+    private async Task<NewsRequestStateEntity?> GetRequestMarkerAsync(string rowKey)
     {
         var tableClient = _tableServiceClient.GetTableClient(NewsRequestsTable);
         await tableClient.CreateIfNotExistsAsync();
 
         try
         {
-            return (await tableClient.GetEntityAsync<NewsRequestStateEntity>(PersonalPartition, "news-request")).Value;
+            return (await tableClient.GetEntityAsync<NewsRequestStateEntity>(PersonalPartition, rowKey)).Value;
         }
         catch (RequestFailedException ex) when (ex.Status == 404)
         {
@@ -712,26 +738,170 @@ public class TableStorageStateService : IStateService
         }
     }
 
-    public async Task SaveNewsRequestAsync(NewsRequestStateEntity entity)
+    private async Task SaveRequestMarkerAsync(NewsRequestStateEntity entity)
     {
         var tableClient = _tableServiceClient.GetTableClient(NewsRequestsTable);
         await tableClient.CreateIfNotExistsAsync();
         await tableClient.UpsertEntityAsync(entity);
     }
 
-    public async Task ClearNewsRequestAsync()
+    private async Task ClearRequestMarkerAsync(string rowKey)
     {
         var tableClient = _tableServiceClient.GetTableClient(NewsRequestsTable);
         await tableClient.CreateIfNotExistsAsync();
 
         try
         {
-            await tableClient.DeleteEntityAsync(PersonalPartition, "news-request");
+            await tableClient.DeleteEntityAsync(PersonalPartition, rowKey);
         }
         catch (RequestFailedException ex) when (ex.Status == 404)
         {
             // Already gone, ignore
         }
+    }
+
+    public async Task<List<EtfHoldingEntity>> GetEtfHoldingsAsync()
+    {
+        var tableClient = _tableServiceClient.GetTableClient(EtfHoldingsTable);
+        await tableClient.CreateIfNotExistsAsync();
+
+        var results = new List<EtfHoldingEntity>();
+        var query = tableClient.QueryAsync<EtfHoldingEntity>(e => e.PartitionKey == EtfPartition);
+
+        await foreach (var entity in query)
+        {
+            results.Add(entity);
+        }
+
+        return results;
+    }
+
+    public async Task SaveEtfHoldingAsync(string symbol, string? name, string? notes)
+    {
+        var tableClient = _tableServiceClient.GetTableClient(EtfHoldingsTable);
+        await tableClient.CreateIfNotExistsAsync();
+
+        var rowKey = EtfKey(symbol);
+        // Re-adding an ETF (to fill in a name or note) must not wipe the reported history
+        var existing = await GetEtfHoldingAsync(tableClient, rowKey);
+
+        var entity = new EtfHoldingEntity
+        {
+            PartitionKey = EtfPartition,
+            RowKey = rowKey,
+            Symbol = symbol.Trim(),
+            Name = string.IsNullOrWhiteSpace(name) ? existing?.Name : name.Trim(),
+            Notes = string.IsNullOrWhiteSpace(notes) ? existing?.Notes : notes.Trim(),
+            CreatedAt = existing?.CreatedAt ?? DateTimeOffset.UtcNow,
+            LastQuote = existing?.LastQuote,
+            LastWeekChangePercent = existing?.LastWeekChangePercent,
+            LastReportedAt = existing?.LastReportedAt
+        };
+
+        await tableClient.UpsertEntityAsync(entity);
+        _logger.LogInformation("Saved ETF holding {Symbol}", entity.Symbol);
+    }
+
+    public async Task DeleteEtfHoldingAsync(string symbol)
+    {
+        var tableClient = _tableServiceClient.GetTableClient(EtfHoldingsTable);
+        await tableClient.CreateIfNotExistsAsync();
+
+        try
+        {
+            await tableClient.DeleteEntityAsync(EtfPartition, EtfKey(symbol));
+            _logger.LogInformation("Deleted ETF holding {Symbol}", symbol);
+        }
+        catch (RequestFailedException ex) when (ex.Status == 404)
+        {
+            // Already gone, ignore
+        }
+    }
+
+    // Stores what was just reported on each tracked ETF so the next report can frame the
+    // move as continuation or reversal. Symbols that aren't tracked (an ad-hoc "/etf VUSA")
+    // are ignored rather than added to the watchlist behind Matthew's back.
+    public async Task SaveEtfSnapshotsAsync(List<EtfPerformance> items)
+    {
+        if (items.Count == 0)
+            return;
+
+        var tableClient = _tableServiceClient.GetTableClient(EtfHoldingsTable);
+        await tableClient.CreateIfNotExistsAsync();
+
+        var now = DateTimeOffset.UtcNow;
+        foreach (var item in items)
+        {
+            var existing = await GetEtfHoldingAsync(tableClient, EtfKey(item.Symbol));
+            if (existing is null)
+                continue;
+
+            existing.LastQuote = item.Quote;
+            existing.LastWeekChangePercent = item.WeekChangePercent;
+            existing.LastReportedAt = now;
+            if (string.IsNullOrWhiteSpace(existing.Name) && !string.IsNullOrWhiteSpace(item.Name))
+                existing.Name = item.Name;
+
+            await tableClient.UpsertEntityAsync(existing);
+        }
+    }
+
+    // Claims the one-time "which ETFs should I follow?" nudge: true for the first caller,
+    // false forever after, so an empty watchlist is asked about once and not every week
+    public async Task<bool> TryClaimEtfNudgeAsync()
+    {
+        var tableClient = _tableServiceClient.GetTableClient(EtfHoldingsTable);
+        await tableClient.CreateIfNotExistsAsync();
+
+        try
+        {
+            // Add (not upsert) — a 409 means the nudge already went out
+            await tableClient.AddEntityAsync(new EtfNudgeEntity { SentAt = DateTimeOffset.UtcNow });
+            return true;
+        }
+        catch (RequestFailedException ex) when (ex.Status == 409)
+        {
+            return false;
+        }
+    }
+
+    // Hands the claim back when the nudge couldn't actually be delivered — a spent claim
+    // would mean Matthew is never asked again
+    public async Task ReleaseEtfNudgeAsync()
+    {
+        var tableClient = _tableServiceClient.GetTableClient(EtfHoldingsTable);
+        await tableClient.CreateIfNotExistsAsync();
+
+        try
+        {
+            var marker = new EtfNudgeEntity();
+            await tableClient.DeleteEntityAsync(marker.PartitionKey, marker.RowKey);
+        }
+        catch (RequestFailedException ex) when (ex.Status == 404)
+        {
+            // Never claimed, ignore
+        }
+    }
+
+    private static async Task<EtfHoldingEntity?> GetEtfHoldingAsync(TableClient tableClient, string rowKey)
+    {
+        try
+        {
+            return (await tableClient.GetEntityAsync<EtfHoldingEntity>(EtfPartition, rowKey)).Value;
+        }
+        catch (RequestFailedException ex) when (ex.Status == 404)
+        {
+            return null;
+        }
+    }
+
+    // Tickers are keyed case-insensitively, with anything a Table Storage row key can't
+    // hold stripped, so "vwce" and "VWCE " are the same holding
+    internal static string EtfKey(string symbol)
+    {
+        var cleaned = new string((symbol ?? "").Trim().ToUpperInvariant()
+            .Where(c => char.IsLetterOrDigit(c) || c is '.' or '-' or '_').ToArray());
+        return cleaned.Length > 0 ? cleaned : "UNKNOWN";
     }
 
     public async Task<bool> TryClaimUpdateAsync(long updateId)

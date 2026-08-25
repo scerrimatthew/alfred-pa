@@ -435,9 +435,9 @@ public class ClaudeSummarizerService : ISummarizerService
               that consultancy launch about?"), match it by headline/topic, then use web_search
               to pull the PRIMARY source (and related coverage if useful) and give him a proper
               read-out: what actually happened, the key numbers, and what it means for Cleverbit's
-              bet. Link the sources you used. Only use web_search for news follow-ups or when he
-              explicitly asks you to look something up online — never for questions his emails
-              and calendar can answer.
+              bet. Link the sources you used. Only use web_search for news follow-ups, ETF/market
+              questions, or when he explicitly asks you to look something up online — never for
+              questions his emails and calendar can answer.
             - THINGS MATTHEW HAS TOLD ME: durable facts he asked Alfred to remember. Treat them
               as true and let them shape your answers without announcing them back to him.
 
@@ -496,6 +496,15 @@ public class ClaudeSummarizerService : ISummarizerService
             - list_news_rules / remove_news_rule: review or undo news digest preferences
               ("what news feedback have I given you?", "start covering funding rounds again"
               — list first to find the rule id if you don't have it).
+            - add_etf: when Matthew mentions an ETF he wants followed ("track VWCE", "add the
+              S&P 500 one I hold"). Pass the ticker as symbol, the full fund name when you know
+              it, and anything he says about why he holds it as notes. It joins the Saturday
+              weekly ETF report.
+            - list_etfs / remove_etf: review or drop tracked ETFs ("which ETFs are you
+              watching?", "stop following IWDA").
+            - For a question about how an ETF or market is doing right now, use list_etfs to see
+              what he follows if needed, then web_search for current numbers — quote the price
+              and the move, explain what drove it, and never give buy/sell advice.
             - remember_fact: when Matthew tells you something about himself or his life worth
               keeping for future conversations — explicitly ("remember that my apartment at
               Hillcrest is A5 in Block A") or clearly durable in passing ("we don't have a
@@ -823,6 +832,38 @@ public class ClaudeSummarizerService : ISummarizerService
                         "message_id": { "type": "string", "description": "The Gmail message id (from id=...)" }
                     },
                     "required": ["message_id"]
+                }
+                """)),
+            new Anthropic.SDK.Common.Function(
+                "add_etf",
+                "Add an ETF to the watchlist covered by the weekly Saturday ETF report.",
+                System.Text.Json.Nodes.JsonNode.Parse("""
+                {
+                    "type": "object",
+                    "properties": {
+                        "symbol": { "type": "string", "description": "Ticker, e.g. \"VWCE\" or \"SXR8.DE\"" },
+                        "name": { "type": "string", "description": "Full fund name if known, e.g. \"Vanguard FTSE All-World UCITS ETF\"" },
+                        "notes": { "type": "string", "description": "Why Matthew holds or watches it, e.g. \"core holding, monthly DCA\"" }
+                    },
+                    "required": ["symbol"]
+                }
+                """)),
+            new Anthropic.SDK.Common.Function(
+                "list_etfs",
+                "List the ETFs covered by the weekly report, with the last reported price where known.",
+                System.Text.Json.Nodes.JsonNode.Parse("""
+                { "type": "object", "properties": {} }
+                """)),
+            new Anthropic.SDK.Common.Function(
+                "remove_etf",
+                "Remove an ETF from the weekly report watchlist.",
+                System.Text.Json.Nodes.JsonNode.Parse("""
+                {
+                    "type": "object",
+                    "properties": {
+                        "symbol": { "type": "string", "description": "Ticker to stop following (from list_etfs)" }
+                    },
+                    "required": ["symbol"]
                 }
                 """)),
             new Anthropic.SDK.Common.Function(

@@ -43,6 +43,13 @@ public class AlfredOptions
     public bool AiNewsFlashEnabled { get; set; } = true;
     public bool AiNewsWeeklyEnabled { get; set; } = true;
 
+    // Weekly ETF report (Saturday-morning timer, personal chat). Also requires
+    // PersonalTelegramChatId. EtfTickers seeds the watchlist from configuration
+    // (comma-separated, e.g. "VWCE,SXR8.DE"); Matthew adds or drops funds from chat.
+    public bool EtfReportEnabled { get; set; } = true;
+    public string EtfTickers { get; set; } = string.Empty;
+    public int EtfMaxHoldings { get; set; } = 8;
+
     public bool IsInSummerBreak(DateTime maltaDate)
     {
         if (!TryParseMonthDay(SummerBreakStart, out var startMonth, out var startDay) ||

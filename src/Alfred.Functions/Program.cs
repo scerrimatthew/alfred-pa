@@ -31,6 +31,7 @@ var host = new HostBuilder()
         services.AddSingleton<IGmailReaderService, GmailReaderService>();
         services.AddSingleton<ISummarizerService, ClaudeSummarizerService>();
         services.AddSingleton<INewsResearchService, ClaudeNewsResearchService>();
+        services.AddSingleton<IEtfResearchService, ClaudeEtfResearchService>();
         services.AddSingleton<IAnthropicCostService, AnthropicCostService>();
         services.AddSingleton<ICalendarService, GoogleCalendarService>();
         services.AddSingleton<INotificationService, TelegramNotificationService>();

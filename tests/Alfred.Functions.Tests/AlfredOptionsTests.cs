@@ -30,6 +30,9 @@ public class AlfredOptionsTests
         Assert.Equal(5, options.AiNewsMaxItems);
         Assert.True(options.AiNewsFlashEnabled);
         Assert.True(options.AiNewsWeeklyEnabled);
+        Assert.True(options.EtfReportEnabled);
+        Assert.Equal(string.Empty, options.EtfTickers);
+        Assert.Equal(8, options.EtfMaxHoldings);
     }
 
     [Theory]

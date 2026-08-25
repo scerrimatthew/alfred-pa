@@ -256,6 +256,92 @@ public class InMemoryStateService : IStateService
         return Task.CompletedTask;
     }
 
+    private NewsRequestStateEntity? _etfRequest;
+
+    public Task<NewsRequestStateEntity?> GetEtfRequestAsync() => Task.FromResult(_etfRequest);
+
+    public Task SaveEtfRequestAsync(NewsRequestStateEntity entity)
+    {
+        _etfRequest = entity;
+        return Task.CompletedTask;
+    }
+
+    public Task ClearEtfRequestAsync()
+    {
+        _etfRequest = null;
+        return Task.CompletedTask;
+    }
+
+    private readonly Dictionary<string, EtfHoldingEntity> _etfHoldings = new();
+    private bool _etfNudgeSent;
+
+    public Task<List<EtfHoldingEntity>> GetEtfHoldingsAsync() =>
+        Task.FromResult(_etfHoldings.Values.ToList());
+
+    // Mirrors TableStorageStateService: keyed the same way (EtfKey is internal to the
+    // functions assembly, so the rule is duplicated here), re-adding keeps history
+    public Task SaveEtfHoldingAsync(string symbol, string? name, string? notes)
+    {
+        var key = EtfKey(symbol);
+        _etfHoldings.TryGetValue(key, out var existing);
+        _etfHoldings[key] = new EtfHoldingEntity
+        {
+            RowKey = key,
+            Symbol = symbol.Trim(),
+            Name = string.IsNullOrWhiteSpace(name) ? existing?.Name : name.Trim(),
+            Notes = string.IsNullOrWhiteSpace(notes) ? existing?.Notes : notes.Trim(),
+            CreatedAt = existing?.CreatedAt ?? DateTimeOffset.UtcNow,
+            LastQuote = existing?.LastQuote,
+            LastWeekChangePercent = existing?.LastWeekChangePercent,
+            LastReportedAt = existing?.LastReportedAt
+        };
+        return Task.CompletedTask;
+    }
+
+    public Task DeleteEtfHoldingAsync(string symbol)
+    {
+        _etfHoldings.Remove(EtfKey(symbol));
+        return Task.CompletedTask;
+    }
+
+    public Task SaveEtfSnapshotsAsync(List<EtfPerformance> items)
+    {
+        foreach (var item in items)
+        {
+            if (!_etfHoldings.TryGetValue(EtfKey(item.Symbol), out var holding))
+                continue;
+
+            holding.LastQuote = item.Quote;
+            holding.LastWeekChangePercent = item.WeekChangePercent;
+            holding.LastReportedAt = DateTimeOffset.UtcNow;
+            if (string.IsNullOrWhiteSpace(holding.Name) && !string.IsNullOrWhiteSpace(item.Name))
+                holding.Name = item.Name;
+        }
+        return Task.CompletedTask;
+    }
+
+    private static string EtfKey(string symbol)
+    {
+        var cleaned = new string(symbol.Trim().ToUpperInvariant()
+            .Where(c => char.IsLetterOrDigit(c) || c is '.' or '-' or '_').ToArray());
+        return cleaned.Length > 0 ? cleaned : "UNKNOWN";
+    }
+
+    public Task<bool> TryClaimEtfNudgeAsync()
+    {
+        if (_etfNudgeSent)
+            return Task.FromResult(false);
+
+        _etfNudgeSent = true;
+        return Task.FromResult(true);
+    }
+
+    public Task ReleaseEtfNudgeAsync()
+    {
+        _etfNudgeSent = false;
+        return Task.CompletedTask;
+    }
+
     private readonly HashSet<long> _claimedUpdates = new();
 
     public Task<bool> TryClaimUpdateAsync(long updateId) =>

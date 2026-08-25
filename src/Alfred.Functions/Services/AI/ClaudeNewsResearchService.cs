@@ -10,20 +10,9 @@ namespace Alfred.Functions.Services.AI;
 
 public class ClaudeNewsResearchService : INewsResearchService
 {
-    // Server-side web search can pause its own loop (stop_reason "pause_turn"); each
-    // re-send resumes it. This caps how many resumes one research run will spend.
-    private const int MaxPauseTurnResumes = 5;
-
-    // Wall-clock budget for a whole research run. Azure kills the invocation hard at the
-    // 10-minute functionTimeout — past that no catch block runs and the caller can't even
-    // apologize — so the run must cut itself off with margin to parse, send, and clean up.
-    internal static readonly TimeSpan ResearchBudget = TimeSpan.FromMinutes(7.5);
-
-    // The SDK's default HttpClient times out at 100 seconds — an opus + multi-search
-    // request routinely runs longer. One shared client (the service is a singleton and
-    // the AnthropicClient is never disposed) with a ceiling above the research budget,
-    // so the per-run cancellation token is what actually governs.
-    private static readonly HttpClient LongRunHttpClient = new() { Timeout = TimeSpan.FromMinutes(9) };
+    // Wall-clock budget for a whole research run, and the pause_turn resume loop itself,
+    // are shared with the weekly ETF report — see WebResearchRunner
+    internal static readonly TimeSpan ResearchBudget = WebResearchRunner.Budget;
 
     private readonly ILogger<ClaudeNewsResearchService> _logger;
     private readonly AlfredOptions _options;
@@ -83,63 +72,8 @@ public class ClaudeNewsResearchService : INewsResearchService
         return string.IsNullOrWhiteSpace(responseText) ? null : responseText.Trim();
     }
 
-    // Runs one web-search research conversation to completion, resuming pause_turn stops.
-    // Returns the final text answer, or null when the run never completed (budget spent
-    // or resume cap hit) — the caller reports that as an incomplete run, not a quiet day.
-    private async Task<string?> RunResearchAsync(string systemPrompt, string userPrompt, int maxSearches, string runLabel)
-    {
-        var client = CreateClient();
-
-        var messages = new List<Message> { new(RoleType.User, userPrompt) };
-
-        var parameters = new MessageParameters
-        {
-            Model = "claude-opus-5",
-            // Generous cap: the run carries thinking + multi-search reasoning + the digest
-            MaxTokens = 16000,
-            System = [new SystemMessage(systemPrompt)],
-            Messages = messages,
-            Tools = [ServerTools.GetWebSearchTool(maxUses: maxSearches)]
-        };
-
-        using var budget = new CancellationTokenSource(ResearchBudget);
-        try
-        {
-            for (var attempt = 0; attempt <= MaxPauseTurnResumes; attempt++)
-            {
-                var response = await client.Messages.GetClaudeMessageAsync(parameters, budget.Token);
-
-                if (response.StopReason == "pause_turn")
-                {
-                    // Server-side search loop paused mid-turn — append the partial assistant
-                    // turn and re-send; the server resumes where it left off. Must carry the FULL
-                    // content (server_tool_use / web_search_tool_result blocks included) —
-                    // response.Message keeps only the text blocks, which would restart the
-                    // research from scratch instead of resuming it
-                    messages.Add(new Message { Role = RoleType.Assistant, Content = response.Content });
-                    continue;
-                }
-
-                // With server tools the answer is the LAST text block — earlier ones are
-                // search-narration ("Let me look at...") interleaved with result blocks
-                var responseText = response.Content?.OfType<TextContent>().LastOrDefault()?.Text ?? "{}";
-
-                _logger.LogInformation("AI news research ({Run}) complete: {Length} chars, {SearchCount} searches",
-                    runLabel, responseText.Length, response.Usage?.ServerToolUse?.WebSearchRequests ?? 0);
-
-                return responseText;
-            }
-        }
-        catch (OperationCanceledException)
-        {
-            _logger.LogWarning("AI news research ({Run}) exceeded its {Budget}-minute budget — cut off",
-                runLabel, ResearchBudget.TotalMinutes);
-            return null;
-        }
-
-        _logger.LogWarning("AI news research ({Run}) still paused after {Max} resumes — giving up", runLabel, MaxPauseTurnResumes);
-        return null;
-    }
+    private Task<string?> RunResearchAsync(string systemPrompt, string userPrompt, int maxSearches, string runLabel) =>
+        WebResearchRunner.RunAsync(CreateClient(), systemPrompt, userPrompt, maxSearches, runLabel, _logger);
 
     // Test seam: when set, replaces the live client (tests back it with a fake
     // HttpClient). Never set in production.
@@ -152,7 +86,7 @@ public class ClaudeNewsResearchService : INewsResearchService
         var apiKey = Environment.GetEnvironmentVariable("Anthropic__ApiKey")
             ?? throw new InvalidOperationException("Anthropic API key not configured");
 
-        return new AnthropicClient(apiKey, LongRunHttpClient);
+        return new AnthropicClient(apiKey, WebResearchRunner.LongRunHttpClient);
     }
 
     internal static string FormatFeedbackSection(List<NewsRuleEntity> rules) =>
@@ -404,16 +338,7 @@ public class ClaudeNewsResearchService : INewsResearchService
 
     internal static AiNewsDigest ParseNewsResponse(string json)
     {
-        json = json.Trim();
-        if (json.StartsWith("```"))
-        {
-            var firstNewline = json.IndexOf('\n');
-            if (firstNewline > 0)
-                json = json[(firstNewline + 1)..];
-            if (json.EndsWith("```"))
-                json = json[..^3];
-            json = json.Trim();
-        }
+        json = WebResearchRunner.StripCodeFence(json);
 
         // Let a malformed response throw — the digest function reports the failure to
         // Matthew instead of silently skipping the day

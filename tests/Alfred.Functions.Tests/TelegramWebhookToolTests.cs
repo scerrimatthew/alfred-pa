@@ -31,9 +31,14 @@ public class TelegramWebhookToolTests : IAsyncLifetime
     private readonly INotificationService _notifications = Substitute.For<INotificationService>();
     private readonly IGmailReaderService _gmail = Substitute.For<IGmailReaderService>();
     private readonly INewsResearchService _newsResearch = Substitute.For<INewsResearchService>();
+    private readonly IEtfResearchService _etfResearch = Substitute.For<IEtfResearchService>();
     private readonly IAnthropicCostService _cost = Substitute.For<IAnthropicCostService>();
 
     private Func<string, JsonNode?, Task<string>> _executeTool = null!;
+
+    // Written by the Arg.Do below every time a function instance is driven, so a test
+    // needing different options can capture that instance's executor too
+    private Func<string, JsonNode?, Task<string>>? _captured;
 
     public async Task InitializeAsync()
     {
@@ -43,33 +48,42 @@ public class TelegramWebhookToolTests : IAsyncLifetime
             .Returns(new List<ChatTurnEntity>());
         _state.GetReportedNewsSinceAsync(Arg.Any<DateTimeOffset>()).Returns(new List<ReportedNewsEntity>());
         _state.GetUserFactsAsync().Returns(new List<UserFactEntity>());
+        _state.GetEtfHoldingsAsync().Returns(new List<EtfHoldingEntity>());
         _calendar.GetUpcomingEventsAsync(Arg.Any<int>()).Returns(new List<Event>());
         _calendar.GetUpcomingPersonalEventsAsync(Arg.Any<int>()).Returns(new List<Event>());
 
-        Func<string, JsonNode?, Task<string>>? captured = null;
         _summarizer.AnswerPersonalQuestionAsync(
                 Arg.Any<string>(), Arg.Any<List<ProcessedEmailEntity>>(), Arg.Any<List<Event>>(),
                 Arg.Any<List<ProcessedEmailEntity>>(), Arg.Any<List<Event>>(), Arg.Any<List<ReportedNewsEntity>>(),
                 Arg.Any<List<UserFactEntity>>(), Arg.Any<List<ChatTurnEntity>>(),
-                Arg.Do<Func<string, JsonNode?, Task<string>>>(f => captured = f))
+                Arg.Do<Func<string, JsonNode?, Task<string>>>(f => _captured = f))
             .Returns("answer");
 
+        _executeTool = await CaptureExecutorAsync();
+    }
+
+    // Drives one webhook invocation the way production does and hands back the tool
+    // executor that instance gave the summarizer
+    private async Task<Func<string, JsonNode?, Task<string>>> CaptureExecutorAsync(Action<AlfredOptions>? mutate = null)
+    {
         var options = Options(o =>
         {
             o.TelegramWebhookSecret = Secret;
             o.PersonalTelegramChatId = PersonalChatId.ToString();
+            mutate?.Invoke(o);
         });
         var function = new TelegramWebhookFunction(
-            _state, _calendar, _summarizer, _notifications, _gmail, _newsResearch, _cost, options,
+            _state, _calendar, _summarizer, _notifications, _gmail, _newsResearch, _etfResearch, _cost, options,
             NullLogger<TelegramWebhookFunction>.Instance);
 
         var body = JsonSerializer.Serialize(new
         {
             message = new { chat = new { id = PersonalChatId }, from = new { id = 42 }, text = "capture the executor" }
         });
+        _captured = null;
         await function.RunAsync(new FakeHttpRequestData(body), Secret);
 
-        _executeTool = captured ?? throw new InvalidOperationException("tool executor was not captured");
+        return _captured ?? throw new InvalidOperationException("tool executor was not captured");
     }
 
     public Task DisposeAsync() => Task.CompletedTask;
@@ -304,6 +318,186 @@ public class TelegramWebhookToolTests : IAsyncLifetime
 
         Assert.Equal("Error: no fact_id provided.", result);
         await _state.DidNotReceiveWithAnyArgs().DeleteUserFactAsync(default!);
+    }
+
+    // ---- ETF watchlist ----
+
+    [Fact]
+    public async Task AddEtf_SavesTheTickerWithItsNameAndNotes()
+    {
+        var result = await _executeTool("add_etf", Input(new
+        {
+            symbol = " vwce ",
+            name = "Vanguard FTSE All-World UCITS ETF",
+            notes = "core holding, monthly DCA"
+        }));
+
+        await _state.Received(1).SaveEtfHoldingAsync(
+            "vwce", "Vanguard FTSE All-World UCITS ETF", "core holding, monthly DCA");
+        Assert.Equal("Now tracking VWCE in the weekly ETF report.", result);
+    }
+
+    [Fact]
+    public async Task AddEtf_WithoutNameOrNotes_StillSaves()
+    {
+        var result = await _executeTool("add_etf", Input(new { symbol = "IWDA" }));
+
+        await _state.Received(1).SaveEtfHoldingAsync("IWDA", null, null);
+        Assert.Contains("IWDA", result);
+    }
+
+    [Theory]
+    [InlineData("{}")]
+    [InlineData("""{"symbol": "   "}""")]
+    public async Task AddEtf_WithoutASymbol_ReturnsAnError(string json)
+    {
+        var result = await _executeTool("add_etf", JsonNode.Parse(json));
+
+        Assert.Equal("Error: no symbol provided.", result);
+        await _state.DidNotReceiveWithAnyArgs().SaveEtfHoldingAsync(default!, default, default);
+    }
+
+    [Theory]
+    [InlineData("$$$")]              // nothing a row key could hold — would collapse onto "UNKNOWN"
+    [InlineData("the S&P 500 one")]
+    [InlineData("extraordinarily")]  // too long to be a ticker
+    public async Task AddEtf_SymbolThatIsntTickerShaped_IsRejectedBeforeTouchingState(string symbol)
+    {
+        var result = await _executeTool("add_etf", Input(new { symbol }));
+
+        Assert.Equal($"Error: \"{symbol}\" doesn't look like a ticker — ask Matthew which symbol he means.", result);
+        await _state.DidNotReceiveWithAnyArgs().SaveEtfHoldingAsync(default!, default, default);
+    }
+
+    [Theory]
+    [InlineData("WELL")]  // Welltower
+    [InlineData("week")]
+    [InlineData("ALL")]
+    public async Task AddEtf_TickerThatReadsLikeAnOrdinaryWord_IsStillTracked(string symbol)
+    {
+        // Matthew named this symbol explicitly through the tool — the question-word
+        // heuristic guards the "/etf …" argument, and must not veto a deliberate add
+        var result = await _executeTool("add_etf", Input(new { symbol }));
+
+        await _state.Received(1).SaveEtfHoldingAsync(symbol, null, null);
+        Assert.Equal($"Now tracking {symbol.ToUpperInvariant()} in the weekly ETF report.", result);
+    }
+
+    [Fact]
+    public async Task AddEtf_SymbolCheckedAfterTrimming_SoPaddingIsNotMistakenForJunk()
+    {
+        var result = await _executeTool("add_etf", Input(new { symbol = "  VWCE  " }));
+
+        await _state.Received(1).SaveEtfHoldingAsync("VWCE", null, null);
+        Assert.Equal("Now tracking VWCE in the weekly ETF report.", result);
+    }
+
+    [Fact]
+    public async Task ListEtfs_NothingTracked_SaysSo()
+    {
+        Assert.Equal("No ETFs are being tracked yet.", await _executeTool("list_etfs", null));
+    }
+
+    [Fact]
+    public async Task ListEtfs_ShowsNameNotesAndTheLastReportedSnapshot()
+    {
+        var reportedAt = new DateTimeOffset(2026, 8, 8, 9, 0, 0, TimeSpan.Zero);
+        _state.GetEtfHoldingsAsync().Returns(new List<EtfHoldingEntity>
+        {
+            EtfHolding("VWCE", name: "Vanguard FTSE All-World", notes: "core holding",
+                lastQuote: "€128.42", lastReportedAt: reportedAt)
+        });
+
+        var listing = await _executeTool("list_etfs", null);
+
+        Assert.Equal($"- VWCE — Vanguard FTSE All-World | core holding | last reported {reportedAt:d MMM yyyy} at €128.42",
+            listing);
+    }
+
+    [Fact]
+    public async Task ListEtfs_MarksTheOnesComingFromConfigurationRatherThanTheWatchlist()
+    {
+        // Matthew can't remove a configured ticker from chat, so the listing must say
+        // which entries are coming from the app setting
+        _state.GetEtfHoldingsAsync().Returns(new List<EtfHoldingEntity> { EtfHolding("VWCE") });
+        var executeTool = await CaptureExecutorAsync(o => o.EtfTickers = "IWDA");
+
+        var listing = await executeTool("list_etfs", null);
+
+        Assert.Contains("- VWCE", listing);
+        Assert.Contains("- IWDA | from the Alfred__EtfTickers setting", listing);
+        Assert.DoesNotContain("- VWCE | from the Alfred__EtfTickers setting", listing);
+    }
+
+    [Fact]
+    public async Task ListEtfs_BeyondTheCap_SaysHowManyAreLeftOut()
+    {
+        _state.GetEtfHoldingsAsync().Returns(new List<EtfHoldingEntity>
+        {
+            EtfHolding("VWCE", createdAt: new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero)),
+            EtfHolding("IWDA", createdAt: new DateTimeOffset(2026, 2, 1, 0, 0, 0, TimeSpan.Zero)),
+            EtfHolding("SXR8", createdAt: new DateTimeOffset(2026, 3, 1, 0, 0, 0, TimeSpan.Zero))
+        });
+        var executeTool = await CaptureExecutorAsync(o => o.EtfMaxHoldings = 2);
+
+        var listing = await executeTool("list_etfs", null);
+
+        Assert.Contains("- VWCE", listing);
+        Assert.Contains("- IWDA", listing);
+        Assert.DoesNotContain("SXR8", listing);
+        Assert.Contains("(1 more tracked than one report covers", listing);
+    }
+
+    [Fact]
+    public async Task RemoveEtf_DeletesTheHoldingAndConfirms()
+    {
+        var result = await _executeTool("remove_etf", Input(new { symbol = " vwce " }));
+
+        await _state.Received(1).DeleteEtfHoldingAsync("vwce");
+        Assert.Equal("Dropped VWCE from the weekly ETF report.", result);
+    }
+
+    [Fact]
+    public async Task RemoveEtf_StillListedInConfiguration_WarnsItWillKeepComingBack()
+    {
+        var executeTool = await CaptureExecutorAsync(o => o.EtfTickers = "VWCE, IWDA");
+
+        var result = await executeTool("remove_etf", Input(new { symbol = "vwce" }));
+
+        await _state.Received(1).DeleteEtfHoldingAsync("vwce");
+        Assert.Contains("Alfred__EtfTickers", result);
+        Assert.Contains("keep appearing", result);
+    }
+
+    [Fact]
+    public async Task RemoveEtf_NotInConfiguration_DoesNotWarn()
+    {
+        var executeTool = await CaptureExecutorAsync(o => o.EtfTickers = "IWDA");
+
+        var result = await executeTool("remove_etf", Input(new { symbol = "VWCE" }));
+
+        Assert.Equal("Dropped VWCE from the weekly ETF report.", result);
+    }
+
+    [Theory]
+    [InlineData("$$$")]
+    [InlineData("the world one")]
+    [InlineData("that long one I bought")]
+    public async Task RemoveEtf_SymbolThatIsntTickerShaped_IsRejectedBeforeDeletingAnything(string symbol)
+    {
+        var result = await _executeTool("remove_etf", Input(new { symbol }));
+
+        Assert.Equal($"Error: \"{symbol}\" doesn't look like a ticker — list_etfs shows the ones being tracked.", result);
+        await _state.DidNotReceiveWithAnyArgs().DeleteEtfHoldingAsync(default!);
+    }
+
+    [Fact]
+    public async Task RemoveEtf_WithoutASymbol_ReturnsAnError()
+    {
+        var result = await _executeTool("remove_etf", Input(new { }));
+
+        Assert.Equal("Error: no symbol provided.", result);
+        await _state.DidNotReceiveWithAnyArgs().DeleteEtfHoldingAsync(default!);
     }
 
     // ---- Snoozes ----

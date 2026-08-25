@@ -31,11 +31,15 @@ public class TelegramWebhookFunctionTests
     private readonly INotificationService _notifications = Substitute.For<INotificationService>();
     private readonly IGmailReaderService _gmail = Substitute.For<IGmailReaderService>();
     private readonly INewsResearchService _newsResearch = Substitute.For<INewsResearchService>();
+    private readonly IEtfResearchService _etfResearch = Substitute.For<IEtfResearchService>();
     private readonly IAnthropicCostService _cost = Substitute.For<IAnthropicCostService>();
 
     // Backing store for the /news in-flight marker, so Save/Get/Clear behave like the
     // real single-row table and the finally-block ownership check sees its own write
     private NewsRequestStateEntity? _newsMarker;
+
+    // Same idea for the /etf marker, which lives under its own row key
+    private NewsRequestStateEntity? _etfMarker;
 
     public TelegramWebhookFunctionTests()
     {
@@ -52,6 +56,13 @@ public class TelegramWebhookFunctionTests
         _state.When(s => s.SaveNewsRequestAsync(Arg.Any<NewsRequestStateEntity>()))
             .Do(ci => _newsMarker = ci.Arg<NewsRequestStateEntity>());
         _state.When(s => s.ClearNewsRequestAsync()).Do(_ => _newsMarker = null);
+        _state.GetEtfHoldingsAsync().Returns(new List<EtfHoldingEntity>());
+        _state.GetEtfRequestAsync().Returns(_ => _etfMarker);
+        _state.When(s => s.SaveEtfRequestAsync(Arg.Any<NewsRequestStateEntity>()))
+            .Do(ci => _etfMarker = ci.Arg<NewsRequestStateEntity>());
+        _state.When(s => s.ClearEtfRequestAsync()).Do(_ => _etfMarker = null);
+        _etfResearch.ResearchWeeklyPerformanceAsync(Arg.Any<List<EtfHoldingEntity>>(), Arg.Any<bool>())
+            .Returns(new EtfReport());
         _state.TryClaimUpdateAsync(Arg.Any<long>()).Returns(true);
         _calendar.GetUpcomingEventsAsync(Arg.Any<int>()).Returns(new List<Event>());
         _calendar.GetUpcomingPersonalEventsAsync(Arg.Any<int>()).Returns(new List<Event>());
@@ -72,7 +83,7 @@ public class TelegramWebhookFunctionTests
     }
 
     private TelegramWebhookFunction CreateFunction(Action<AlfredOptions>? mutate = null) =>
-        new(_state, _calendar, _summarizer, _notifications, _gmail, _newsResearch, _cost,
+        new(_state, _calendar, _summarizer, _notifications, _gmail, _newsResearch, _etfResearch, _cost,
             Options(o =>
             {
                 o.TelegramWebhookSecret = Secret;
@@ -769,7 +780,7 @@ public class TelegramWebhookFunctionTests
 
         var logger = Substitute.For<Microsoft.Extensions.Logging.ILogger<TelegramWebhookFunction>>();
         var function = new TelegramWebhookFunction(
-            _state, _calendar, _summarizer, _notifications, _gmail, _newsResearch, _cost,
+            _state, _calendar, _summarizer, _notifications, _gmail, _newsResearch, _etfResearch, _cost,
             Options(o =>
             {
                 o.TelegramWebhookSecret = Secret;
@@ -892,6 +903,533 @@ public class TelegramWebhookFunctionTests
         await _state.DidNotReceiveWithAnyArgs().SaveNewsRequestAsync(default!);
         await _summarizer.DidNotReceiveWithAnyArgs().AnswerPersonalQuestionAsync(
             default!, default!, default!, default!, default!, default!, default!, default!, default!);
+    }
+
+    // ---- /etf command ----
+
+    private EtfReport SetUpEtfResult(string? message = "📈 Week of 10-14 Aug")
+    {
+        var report = new EtfReport
+        {
+            TelegramMessage = message,
+            Items = [new EtfPerformance { Symbol = "VWCE", Quote = "€128.42", WeekChangePercent = -1.4 }]
+        };
+        _etfResearch.ResearchWeeklyPerformanceAsync(Arg.Any<List<EtfHoldingEntity>>(), Arg.Any<bool>())
+            .Returns(report);
+        return report;
+    }
+
+    private void TrackEtfs(params string[] symbols) =>
+        _state.GetEtfHoldingsAsync().Returns(symbols.Select(s => EtfHolding(s)).ToList());
+
+    [Fact]
+    public async Task Etf_Bare_MarksTheRunInFlight_ResearchesOnDemand_SendsAndSavesSnapshots_ThenClearsTheMarker()
+    {
+        TrackEtfs("VWCE");
+        var report = SetUpEtfResult();
+
+        NewsRequestStateEntity? marker = null;
+        _state.When(s => s.SaveEtfRequestAsync(Arg.Any<NewsRequestStateEntity>()))
+            .Do(ci => marker = ci.Arg<NewsRequestStateEntity>());
+
+        var status = await RunAsync(MessageUpdate(PersonalChatId, UserId, "/etf"));
+
+        Assert.Equal(HttpStatusCode.OK, status);
+        Assert.NotNull(marker);
+        Assert.True((DateTimeOffset.UtcNow - marker.RequestedAt).Duration() < TimeSpan.FromMinutes(1));
+
+        await _notifications.Received(1).SendMessageAsync(PersonalChatId, Arg.Is<string>(m => m.Contains("On it")));
+        // A chat request is an on-demand run, which shifts the window framing in the prompt
+        await _etfResearch.Received(1).ResearchWeeklyPerformanceAsync(
+            Arg.Is<List<EtfHoldingEntity>>(h => h.Count == 1 && h[0].Symbol == "VWCE"), true);
+        await _notifications.Received(1).SendPersonalAlertAsync("📈 Week of 10-14 Aug");
+        await _state.Received(1).SaveEtfSnapshotsAsync(report.Items);
+        await _state.Received(1).ClearEtfRequestAsync();
+        // A command is not a question — the Q&A path must stay untouched
+        await _summarizer.DidNotReceiveWithAnyArgs().AnswerPersonalQuestionAsync(
+            default!, default!, default!, default!, default!, default!, default!, default!, default!);
+    }
+
+    [Fact]
+    public async Task Etf_WithTickers_NarrowsTheRunToThoseFundsAndKeepsWhatIsAlreadyKnownAboutThem()
+    {
+        _state.GetEtfHoldingsAsync().Returns(new List<EtfHoldingEntity>
+        {
+            EtfHolding("VWCE", name: "Vanguard FTSE All-World", notes: "core holding", lastQuote: "€130.00"),
+            EtfHolding("SXR8", name: "iShares Core S&P 500")
+        });
+        SetUpEtfResult();
+
+        await RunAsync(MessageUpdate(PersonalChatId, UserId, "/etf VWCE, IWDA"));
+
+        await _etfResearch.Received(1).ResearchWeeklyPerformanceAsync(
+            Arg.Is<List<EtfHoldingEntity>>(h =>
+                h.Select(x => x.Symbol).SequenceEqual(new[] { "VWCE", "IWDA" })
+                // the saved fund keeps its name, notes and last snapshot; the ad-hoc one is bare
+                && h[0].Notes == "core holding" && h[0].LastQuote == "€130.00"
+                && h[1].Name == null),
+            true);
+    }
+
+    [Theory]
+    [InlineData("/etf what happened to the S&P this week?")]
+    [InlineData("/etf how is my portfolio doing?")]
+    [InlineData("/etf tell me about the extraordinarily bad week")]
+    [InlineData("/etf how are mine doing")]      // every token is ticker-shaped, but they're words
+    [InlineData("/etf what about this week")]
+    [InlineData("/etf and")]                     // nothing left once the connective is dropped
+    [InlineData("/etf the S&P 500 one")]         // not a ticker list, connectives or not
+    public async Task Etf_NonTickerArgument_GetsUsageGuidanceInsteadOfResearchingJunk(string text)
+    {
+        TrackEtfs("VWCE");
+
+        var status = await RunAsync(MessageUpdate(PersonalChatId, UserId, text));
+
+        Assert.Equal(HttpStatusCode.OK, status);
+        await _notifications.Received(1).SendMessageAsync(
+            PersonalChatId, Arg.Is<string>(m => m.Contains("<b>/etf VWCE, IWDA</b>") && m.Contains("just ask me in plain words")));
+        await _etfResearch.DidNotReceiveWithAnyArgs().ResearchWeeklyPerformanceAsync(default!, default);
+        await _state.DidNotReceiveWithAnyArgs().SaveEtfRequestAsync(default!);
+        await _state.DidNotReceive().GetEtfHoldingsAsync();
+    }
+
+    [Fact]
+    public async Task Etf_NothingTracked_ExplainsHowToStartInsteadOfResearchingNothing()
+    {
+        var status = await RunAsync(MessageUpdate(PersonalChatId, UserId, "/etf"));
+
+        Assert.Equal(HttpStatusCode.OK, status);
+        await _notifications.Received(1).SendMessageAsync(
+            PersonalChatId, Arg.Is<string>(m => m.Contains("not following any ETFs yet")));
+        await _etfResearch.DidNotReceiveWithAnyArgs().ResearchWeeklyPerformanceAsync(default!, default);
+        await _state.DidNotReceiveWithAnyArgs().SaveEtfRequestAsync(default!);
+    }
+
+    [Fact]
+    public async Task Etf_ConfiguredTickersAlone_AreEnoughToRun()
+    {
+        SetUpEtfResult();
+
+        await RunAsync(MessageUpdate(PersonalChatId, UserId, "/etf"), mutate: o => o.EtfTickers = "VWCE IWDA");
+
+        await _etfResearch.Received(1).ResearchWeeklyPerformanceAsync(
+            Arg.Is<List<EtfHoldingEntity>>(h => h.Select(x => x.Symbol).SequenceEqual(new[] { "VWCE", "IWDA" })), true);
+    }
+
+    [Fact]
+    public async Task Etf_WhileARunIsInFlight_SaysStillPullingInsteadOfResearchingAgain()
+    {
+        TrackEtfs("VWCE");
+        _etfMarker = new NewsRequestStateEntity { RequestedAt = DateTimeOffset.UtcNow.AddMinutes(-4) };
+
+        var status = await RunAsync(MessageUpdate(PersonalChatId, UserId, "/etf"));
+
+        Assert.Equal(HttpStatusCode.OK, status);
+        await _notifications.Received(1).SendMessageAsync(
+            PersonalChatId, Arg.Is<string>(m => m.Contains("Still pulling the ETF numbers") && m.Contains("4 min ago")));
+        // No second run, and the in-flight run's marker must survive for its own finally
+        await _etfResearch.DidNotReceiveWithAnyArgs().ResearchWeeklyPerformanceAsync(default!, default);
+        await _state.DidNotReceiveWithAnyArgs().SaveEtfRequestAsync(default!);
+        await _state.DidNotReceive().ClearEtfRequestAsync();
+    }
+
+    [Fact]
+    public async Task Etf_MarkerJustInsideTheSharedWindow_IsStillTreatedAsInFlight()
+    {
+        // The webhook and the timer must agree on what "in flight" means, or one path
+        // researches over the other and the same chat gets two reports
+        TrackEtfs("VWCE");
+        _etfMarker = new NewsRequestStateEntity
+        {
+            RequestedAt = DateTimeOffset.UtcNow - EtfWeeklyReportFunction.ResearchInFlightWindow + TimeSpan.FromMinutes(1)
+        };
+
+        await RunAsync(MessageUpdate(PersonalChatId, UserId, "/etf"));
+
+        await _notifications.Received(1).SendMessageAsync(
+            PersonalChatId, Arg.Is<string>(m => m.Contains("Still pulling the ETF numbers")));
+        await _etfResearch.DidNotReceiveWithAnyArgs().ResearchWeeklyPerformanceAsync(default!, default);
+    }
+
+    [Fact]
+    public async Task Etf_MarkerSecondsOld_ReportsAtLeastOneMinute()
+    {
+        TrackEtfs("VWCE");
+        _etfMarker = new NewsRequestStateEntity { RequestedAt = DateTimeOffset.UtcNow };
+
+        await RunAsync(MessageUpdate(PersonalChatId, UserId, "/etf"));
+
+        await _notifications.Received(1).SendMessageAsync(
+            PersonalChatId, Arg.Is<string>(m => m.Contains("about 1 min ago")));
+    }
+
+    [Fact]
+    public async Task Etf_StaleMarkerFromACrashedRun_IsIgnoredAndTheRunProceeds()
+    {
+        TrackEtfs("VWCE");
+        // Just past the shared window, so this follows the constant rather than a copy of it
+        _etfMarker = new NewsRequestStateEntity
+        {
+            RequestedAt = DateTimeOffset.UtcNow - EtfWeeklyReportFunction.ResearchInFlightWindow - TimeSpan.FromMinutes(1)
+        };
+        SetUpEtfResult();
+
+        await RunAsync(MessageUpdate(PersonalChatId, UserId, "/etf"));
+
+        await _etfResearch.Received(1).ResearchWeeklyPerformanceAsync(Arg.Any<List<EtfHoldingEntity>>(), true);
+        await _notifications.Received(1).SendPersonalAlertAsync("📈 Week of 10-14 Aug");
+    }
+
+    [Fact]
+    public async Task Etf_NewsRunInFlight_DoesNotBlockTheEtfCommand()
+    {
+        // The two commands use separate marker rows — an /ai-news sweep must not lock out /etf
+        TrackEtfs("VWCE");
+        _newsMarker = new NewsRequestStateEntity { RequestedAt = DateTimeOffset.UtcNow.AddMinutes(-2) };
+        SetUpEtfResult();
+
+        await RunAsync(MessageUpdate(PersonalChatId, UserId, "/etf"));
+
+        await _etfResearch.Received(1).ResearchWeeklyPerformanceAsync(Arg.Any<List<EtfHoldingEntity>>(), true);
+        await _state.DidNotReceiveWithAnyArgs().SaveNewsRequestAsync(default!);
+    }
+
+    [Fact]
+    public async Task Etf_ResearchCutOff_TellsMatthewAndStillClearsTheMarker()
+    {
+        TrackEtfs("VWCE");
+        _etfResearch.ResearchWeeklyPerformanceAsync(Arg.Any<List<EtfHoldingEntity>>(), Arg.Any<bool>())
+            .Returns(new EtfReport { Incomplete = true });
+
+        await RunAsync(MessageUpdate(PersonalChatId, UserId, "/etf"));
+
+        await _notifications.Received(1).SendMessageAsync(
+            PersonalChatId, Arg.Is<string>(m => m.Contains("ran long") && m.Contains("cut it off")));
+        await _notifications.DidNotReceiveWithAnyArgs().SendPersonalAlertAsync(default!);
+        await _state.DidNotReceiveWithAnyArgs().SaveEtfSnapshotsAsync(default!);
+        await _state.Received(1).ClearEtfRequestAsync();
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("   ")]
+    public async Task Etf_ReportWithoutAMessage_ApologizesRatherThanSendingABlank(string? message)
+    {
+        TrackEtfs("VWCE");
+        SetUpEtfResult(message);
+
+        await RunAsync(MessageUpdate(PersonalChatId, UserId, "/etf"));
+
+        await _notifications.Received(1).SendMessageAsync(
+            PersonalChatId, Arg.Is<string>(m => m.Contains("couldn't get reliable numbers")));
+        await _notifications.DidNotReceiveWithAnyArgs().SendPersonalAlertAsync(default!);
+        await _state.Received(1).ClearEtfRequestAsync();
+    }
+
+    [Fact]
+    public async Task Etf_ReportWithoutAnyFunds_ApologizesAndSavesNoSnapshots()
+    {
+        TrackEtfs("VWCE");
+        var report = SetUpEtfResult();
+        report.Items.Clear();
+
+        await RunAsync(MessageUpdate(PersonalChatId, UserId, "/etf"));
+
+        await _notifications.Received(1).SendMessageAsync(
+            PersonalChatId, Arg.Is<string>(m => m.Contains("couldn't get reliable numbers")));
+        await _notifications.DidNotReceiveWithAnyArgs().SendPersonalAlertAsync(default!);
+        await _state.DidNotReceiveWithAnyArgs().SaveEtfSnapshotsAsync(default!);
+        await _state.Received(1).ClearEtfRequestAsync();
+    }
+
+    [Fact]
+    public async Task Etf_ResearchThrowing_ApologizesAndStillClearsTheMarker()
+    {
+        TrackEtfs("VWCE");
+        _etfResearch.ResearchWeeklyPerformanceAsync(Arg.Any<List<EtfHoldingEntity>>(), Arg.Any<bool>())
+            .ThrowsAsync(new InvalidOperationException("model down"));
+
+        var status = await RunAsync(MessageUpdate(PersonalChatId, UserId, "/etf"));
+
+        Assert.Equal(HttpStatusCode.OK, status);
+        await _notifications.Received(1).SendMessageAsync(
+            PersonalChatId, Arg.Is<string>(m => m.Contains("hit a snag")));
+        await _state.Received(1).ClearEtfRequestAsync();
+        Assert.Null(_etfMarker);
+    }
+
+    [Fact]
+    public async Task Etf_MarkerReplacedByASuccessorRun_IsLeftForTheSuccessorToClear()
+    {
+        TrackEtfs("VWCE");
+        var successor = new NewsRequestStateEntity { RequestedAt = DateTimeOffset.UtcNow.AddMinutes(5) };
+        var report = new EtfReport
+        {
+            TelegramMessage = "📈 Week of 10-14 Aug",
+            Items = [new EtfPerformance { Symbol = "VWCE" }]
+        };
+        _etfResearch.ResearchWeeklyPerformanceAsync(Arg.Any<List<EtfHoldingEntity>>(), Arg.Any<bool>())
+            .Returns(_ =>
+            {
+                _etfMarker = successor;
+                return report;
+            });
+
+        await RunAsync(MessageUpdate(PersonalChatId, UserId, "/etf"));
+
+        await _state.DidNotReceive().ClearEtfRequestAsync();
+        Assert.Same(successor, _etfMarker);
+        await _notifications.Received(1).SendPersonalAlertAsync("📈 Week of 10-14 Aug");
+    }
+
+    [Fact]
+    public async Task Etf_MoreFundsThanOneRunCovers_SaysSoInTheReportItSends()
+    {
+        TrackEtfs("VWCE", "IWDA", "SXR8");
+        SetUpEtfResult();
+
+        await RunAsync(MessageUpdate(PersonalChatId, UserId, "/etf"), mutate: o => o.EtfMaxHoldings = 2);
+
+        await _etfResearch.Received(1).ResearchWeeklyPerformanceAsync(
+            Arg.Is<List<EtfHoldingEntity>>(h => h.Count == 2), true);
+        await _notifications.Received(1).SendPersonalAlertAsync(
+            Arg.Is<string>(m => m.StartsWith("📈 Week of 10-14 Aug") && m.Contains("1 more fund is")));
+    }
+
+    [Theory]
+    [InlineData("/etf ALL")]   // Allstate — also a question word, but alone it's the ticker he meant
+    [InlineData("/etf SO")]
+    public async Task Etf_LoneTickerThatIsAlsoAnOrdinaryWord_IsStillResearched(string text)
+    {
+        SetUpEtfResult();
+
+        await RunAsync(MessageUpdate(PersonalChatId, UserId, text));
+
+        await _notifications.DidNotReceive().SendMessageAsync(
+            PersonalChatId, Arg.Is<string>(m => m.Contains("just ask me in plain words")));
+        await _etfResearch.Received(1).ResearchWeeklyPerformanceAsync(
+            Arg.Is<List<EtfHoldingEntity>>(h => h.Count == 1), true);
+    }
+
+    [Theory]
+    [InlineData("/etf VWCE and IWDA")]
+    [InlineData("/etf VWCE & IWDA")]
+    [InlineData("/etf VWCE plus IWDA")]
+    [InlineData("/etf VWCE + IWDA")]
+    public async Task Etf_TickersJoinedByAConnective_AreReadAsTheListTheyObviouslyAre(string text)
+    {
+        SetUpEtfResult();
+
+        await RunAsync(MessageUpdate(PersonalChatId, UserId, text));
+
+        await _notifications.DidNotReceive().SendMessageAsync(
+            PersonalChatId, Arg.Is<string>(m => m.Contains("just ask me in plain words")));
+        // The connective is dropped, not researched as a fund
+        await _etfResearch.Received(1).ResearchWeeklyPerformanceAsync(
+            Arg.Is<List<EtfHoldingEntity>>(h => h.Select(x => x.Symbol).SequenceEqual(new[] { "VWCE", "IWDA" })),
+            true);
+    }
+
+    [Fact]
+    public async Task Etf_ConnectiveDoesNotRescueASentence()
+    {
+        // Dropping "and" must not turn a question into a ticker list
+        await RunAsync(MessageUpdate(PersonalChatId, UserId, "/etf how are mine doing and what next"));
+
+        await _notifications.Received(1).SendMessageAsync(
+            PersonalChatId, Arg.Is<string>(m => m.Contains("just ask me in plain words")));
+        await _etfResearch.DidNotReceiveWithAnyArgs().ResearchWeeklyPerformanceAsync(default!, default);
+    }
+
+    [Fact]
+    public async Task Etf_RequestedTickers_KeepTheOrderHeTypedThemIn()
+    {
+        // The saved fund is substituted in place rather than promoted to the front
+        _state.GetEtfHoldingsAsync().Returns(new List<EtfHoldingEntity>
+        {
+            EtfHolding("SXR8", name: "iShares Core S&P 500", notes: "US sleeve")
+        });
+        SetUpEtfResult();
+
+        await RunAsync(MessageUpdate(PersonalChatId, UserId, "/etf VWCE, SXR8, IWDA"));
+
+        await _etfResearch.Received(1).ResearchWeeklyPerformanceAsync(
+            Arg.Is<List<EtfHoldingEntity>>(h =>
+                h.Select(x => x.Symbol).SequenceEqual(new[] { "VWCE", "SXR8", "IWDA" })
+                && h[1].Notes == "US sleeve"),
+            true);
+    }
+
+    [Fact]
+    public async Task Etf_MoreTickersThanOneRunCovers_IsResearchedCappedWithTheOverflowNote()
+    {
+        // A long, well-formed list is a legitimate request: cap it and say so rather than
+        // bouncing it back as usage guidance
+        SetUpEtfResult();
+
+        await RunAsync(MessageUpdate(PersonalChatId, UserId, "/etf VWCE IWDA SXR8 VUSA EUNL VUAA IUSQ VHYL VFEM"));
+
+        await _notifications.DidNotReceive().SendMessageAsync(
+            PersonalChatId, Arg.Is<string>(m => m.Contains("just ask me in plain words")));
+        await _etfResearch.Received(1).ResearchWeeklyPerformanceAsync(
+            Arg.Is<List<EtfHoldingEntity>>(h =>
+                h.Count == 8 && h[0].Symbol == "VWCE" && h[7].Symbol == "VHYL"),
+            true);
+        await _notifications.Received(1).SendPersonalAlertAsync(
+            Arg.Is<string>(m => m.Contains("1 more fund is")));
+    }
+
+    [Fact]
+    public async Task Etf_MarkerReadBackWithSubSecondDrift_IsStillRecognizedAsItsOwn()
+    {
+        // Table Storage need not preserve sub-millisecond ticks, so the marker read back in
+        // the finally can differ slightly from the one written — an exact comparison would
+        // leak it and answer "still pulling…" for the next ten minutes
+        TrackEtfs("VWCE");
+        SetUpEtfResult();
+        _state.When(s => s.SaveEtfRequestAsync(Arg.Any<NewsRequestStateEntity>()))
+            .Do(ci => _etfMarker = new NewsRequestStateEntity
+            {
+                RequestedAt = ci.Arg<NewsRequestStateEntity>().RequestedAt.AddMilliseconds(200)
+            });
+
+        await RunAsync(MessageUpdate(PersonalChatId, UserId, "/etf"));
+
+        await _state.Received(1).ClearEtfRequestAsync();
+        Assert.Null(_etfMarker);
+    }
+
+    [Fact]
+    public async Task Etf_MarkerCleanupFailing_DoesNotUndoADeliveredReport()
+    {
+        TrackEtfs("VWCE");
+        SetUpEtfResult();
+        _state.ClearEtfRequestAsync().ThrowsAsync(new TimeoutException("tables down"));
+
+        var logger = Substitute.For<Microsoft.Extensions.Logging.ILogger<TelegramWebhookFunction>>();
+        var function = new TelegramWebhookFunction(
+            _state, _calendar, _summarizer, _notifications, _gmail, _newsResearch, _etfResearch, _cost,
+            Options(o =>
+            {
+                o.TelegramWebhookSecret = Secret;
+                o.PersonalTelegramChatId = PersonalChatId.ToString();
+            }),
+            logger);
+
+        var status = await RunAsync(function, MessageUpdate(PersonalChatId, UserId, "/etf"));
+
+        Assert.Equal(HttpStatusCode.OK, status);
+        // The report went out untouched by the cleanup failure...
+        await _notifications.Received(1).SendPersonalAlertAsync("📈 Week of 10-14 Aug");
+        await _notifications.DidNotReceive().SendMessageAsync(
+            PersonalChatId, Arg.Is<string>(m => m.Contains("hit a snag")));
+        // ...and the failure never bubbled to the outer error handler
+        Assert.DoesNotContain(logger.ReceivedCalls(), c =>
+            c.GetMethodInfo().Name == "Log"
+            && Equals(c.GetArguments()[0], Microsoft.Extensions.Logging.LogLevel.Error));
+    }
+
+    [Theory]
+    [InlineData("/etfs")]
+    [InlineData("/etf@AlfredBot")]
+    [InlineData("/ETF")]
+    [InlineData("/Etfs@AlfredBot")]
+    public async Task Etf_CommandVariants_AllTriggerTheRun(string text)
+    {
+        TrackEtfs("VWCE");
+        SetUpEtfResult();
+
+        await RunAsync(MessageUpdate(PersonalChatId, UserId, text));
+
+        await _etfResearch.Received(1).ResearchWeeklyPerformanceAsync(Arg.Any<List<EtfHoldingEntity>>(), true);
+        await _summarizer.DidNotReceiveWithAnyArgs().AnswerPersonalQuestionAsync(
+            default!, default!, default!, default!, default!, default!, default!, default!, default!);
+    }
+
+    [Theory]
+    [InlineData("/etfsomething")]  // prefixed word, not the command
+    [InlineData("what does /etf do?")]
+    public async Task Etf_LookalikeText_IsTreatedAsAQuestion(string text)
+    {
+        TrackEtfs("VWCE");
+
+        await RunAsync(MessageUpdate(PersonalChatId, UserId, text));
+
+        await _etfResearch.DidNotReceiveWithAnyArgs().ResearchWeeklyPerformanceAsync(default!, default);
+        await _summarizer.Received(1).AnswerPersonalQuestionAsync(
+            text, Arg.Any<List<ProcessedEmailEntity>>(), Arg.Any<List<Event>>(),
+            Arg.Any<List<ProcessedEmailEntity>>(), Arg.Any<List<Event>>(), Arg.Any<List<ReportedNewsEntity>>(),
+            Arg.Any<List<UserFactEntity>>(), Arg.Any<List<ChatTurnEntity>>(),
+            Arg.Any<Func<string, System.Text.Json.Nodes.JsonNode?, Task<string>>>());
+    }
+
+    [Fact]
+    public async Task Etf_InTheSchoolChat_IsNotACommand()
+    {
+        TrackEtfs("VWCE");
+
+        await RunAsync(MessageUpdate(SchoolChatId, UserId, "/etf"));
+
+        // The ETF report is personal-chat only — the school chat gets the plain Q&A path
+        await _etfResearch.DidNotReceiveWithAnyArgs().ResearchWeeklyPerformanceAsync(default!, default);
+        await _notifications.Received(1).SendMessageAsync(SchoolChatId, "school answer");
+    }
+
+    [Theory]
+    [InlineData(new[] { "VWCE" }, true)]
+    [InlineData(new[] { "SXR8.DE", "0P0000KSPA" }, true)]
+    [InlineData(new[] { "VWCE", "IWDA", "SXR8" }, true)]
+    [InlineData(new string[0], false)]                            // nothing to research
+    [InlineData(new[] { "how", "are", "mine", "doing" }, false)]  // ticker-shaped words, but a sentence
+    [InlineData(new[] { "VWCE", "and", "IWDA" }, false)]          // one ordinary word poisons the list
+    [InlineData(new[] { "extraordinarily" }, false)]              // too long for a ticker
+    [InlineData(new[] { ".VWCE" }, false)]                        // tickers don't open with punctuation
+    [InlineData(new[] { "doing?" }, false)]                       // punctuation is not ticker-shaped
+    [InlineData(new[] { "VWCE", "doing?" }, false)]               // one wrong shape is enough
+    public void LooksLikeSymbols_TellsATickerListFromASentence(string[] tokens, bool expected)
+    {
+        Assert.Equal(expected, TelegramWebhookFunction.LooksLikeSymbols(tokens.ToList()));
+    }
+
+    [Theory]
+    [InlineData("ALL")]   // Allstate
+    [InlineData("SO")]    // Southern Company
+    [InlineData("IT")]    // Gartner
+    [InlineData("how")]
+    public void LooksLikeSymbols_ALoneToken_IsTakenAtFaceValueEvenIfItIsAnOrdinaryWord(string token)
+    {
+        // Real tickers collide with common words; with nothing else in the argument there
+        // is no sentence to detect, so a single token is treated as the ticker he meant
+        Assert.True(TelegramWebhookFunction.LooksLikeSymbols([token]));
+    }
+
+    [Fact]
+    public void LooksLikeSymbols_LongButWellFormedList_IsAccepted()
+    {
+        // No count cap: the watchlist cap trims the excess and the report says so, which
+        // beats answering a perfectly good ticker list with usage guidance
+        var tokens = Enumerable.Range(1, 12).Select(i => $"ETF{i}").ToList();
+
+        Assert.True(TelegramWebhookFunction.LooksLikeSymbols(tokens));
+    }
+
+    [Theory]
+    [InlineData("VWCE", true)]
+    [InlineData("sxr8.de", true)]
+    [InlineData("0P0000KSPA", true)]
+    [InlineData("BRK-B", true)]
+    [InlineData("ETF_1", true)]            // underscores survive EtfKey, so they're ticker-shaped
+    [InlineData("how", true)]              // shape only — the question-word rule lives elsewhere
+    [InlineData("week", true)]
+    [InlineData("extraordinarily", false)] // 15 chars — past the ticker length
+    [InlineData("VW CE", false)]           // a space is not ticker-shaped
+    [InlineData(".VWCE", false)]
+    [InlineData("$$$", false)]
+    [InlineData("", false)]
+    public void HasTickerShape_ChecksTheShapeAndNothingElse(string token, bool expected)
+    {
+        Assert.Equal(expected, TelegramWebhookFunction.HasTickerShape(token));
     }
 
     // ---- /joke command ----

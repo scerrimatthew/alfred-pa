@@ -19,7 +19,7 @@ public class TelegramWebhookFunction
     // so "tell me more about that story" follow-ups can find them
     private const int NewsChatLookbackDays = 7;
 
-    // An in-flight /news marker older than this is treated as crashed and ignored
+    // An in-flight /ai-news or /etf marker older than this is treated as crashed and ignored
     private static readonly TimeSpan NewsRequestTimeout = TimeSpan.FromMinutes(10);
 
     private readonly IStateService _stateService;
@@ -28,6 +28,7 @@ public class TelegramWebhookFunction
     private readonly INotificationService _notificationService;
     private readonly IGmailReaderService _gmailReader;
     private readonly INewsResearchService _newsResearch;
+    private readonly IEtfResearchService _etfResearch;
     private readonly IAnthropicCostService _costService;
     private readonly AlfredOptions _options;
     private readonly ILogger<TelegramWebhookFunction> _logger;
@@ -39,6 +40,7 @@ public class TelegramWebhookFunction
         INotificationService notificationService,
         IGmailReaderService gmailReader,
         INewsResearchService newsResearch,
+        IEtfResearchService etfResearch,
         IAnthropicCostService costService,
         IOptions<AlfredOptions> options,
         ILogger<TelegramWebhookFunction> logger)
@@ -49,6 +51,7 @@ public class TelegramWebhookFunction
         _notificationService = notificationService;
         _gmailReader = gmailReader;
         _newsResearch = newsResearch;
+        _etfResearch = etfResearch;
         _costService = costService;
         _options = options.Value;
         _logger = logger;
@@ -160,6 +163,18 @@ public class TelegramWebhookFunction
             if (isPersonalChat && newsMatch.Success)
             {
                 await HandleNewsCommandAsync(chatId, newsMatch.Groups["topic"].Value.Trim());
+                return req.CreateResponse(System.Net.HttpStatusCode.OK);
+            }
+
+            // "/etf", "/etfs", or "/etf VWCE, IWDA" — the weekly ETF read, on demand
+            var etfMatch = System.Text.RegularExpressions.Regex.Match(
+                question.TrimStart(),
+                @"^/etfs?(?:@\S+)?(?:\s+(?<symbols>.*))?$",
+                System.Text.RegularExpressions.RegexOptions.IgnoreCase
+                    | System.Text.RegularExpressions.RegexOptions.Singleline);
+            if (isPersonalChat && etfMatch.Success)
+            {
+                await HandleEtfCommandAsync(chatId, etfMatch.Groups["symbols"].Value.Trim());
                 return req.CreateResponse(System.Net.HttpStatusCode.OK);
             }
 
@@ -633,6 +648,136 @@ public class TelegramWebhookFunction
         }
     }
 
+    // "/etf" runs the weekly ETF read on demand; "/etf VWCE, IWDA" reports on those
+    // tickers instead of the saved watchlist. Research takes minutes, so the same
+    // single-row marker as /ai-news drops a second trigger while one run is in flight.
+    private async Task HandleEtfCommandAsync(long chatId, string argument)
+    {
+        var requestedSymbols = EtfWeeklyReportFunction.ParseSymbols(argument)
+            .Where(t => !Connectives.Contains(t))
+            .ToList();
+        if (argument.Length > 0 && !LooksLikeSymbols(requestedSymbols))
+        {
+            // "/etf how are mine doing" is a question, not a ticker list — don't research junk
+            await _notificationService.SendMessageAsync(chatId,
+                "Send <b>/etf</b> for the funds I follow, or <b>/etf VWCE, IWDA</b> for specific tickers. "
+                + "For anything else, just ask me in plain words.");
+            return;
+        }
+
+        var saved = await _stateService.GetEtfHoldingsAsync();
+
+        // An explicit list narrows the run to those tickers, in the order he typed them,
+        // keeping the saved name, notes and last snapshot for the ones already tracked
+        var (holdings, dropped) = requestedSymbols.Count > 0
+            ? EtfWeeklyReportFunction.BuildRequestedWatchlist(requestedSymbols, saved, _options.EtfMaxHoldings)
+            : EtfWeeklyReportFunction.BuildWatchlist(saved, _options.EtfTickers, _options.EtfMaxHoldings);
+
+        if (holdings.Count == 0)
+        {
+            await _notificationService.SendMessageAsync(chatId,
+                "I'm not following any ETFs yet. Tell me which ones — \"track VWCE\" — and I'll cover them "
+                + "every Saturday morning, or send <b>/etf VWCE</b> to check one right now.");
+            return;
+        }
+
+        var existing = await _stateService.GetEtfRequestAsync();
+        if (existing is not null
+            && existing.RequestedAt > DateTimeOffset.UtcNow - EtfWeeklyReportFunction.ResearchInFlightWindow)
+        {
+            // Telegram redeliveries were already dropped by the update-id claim, so this is
+            // Matthew asking again mid-run — tell him instead of researching twice
+            var minutes = Math.Max(1, (int)(DateTimeOffset.UtcNow - existing.RequestedAt).TotalMinutes);
+            await _notificationService.SendMessageAsync(chatId,
+                $"Still pulling the ETF numbers (started about {minutes} min ago) — I'll send them as soon as they land.");
+            return;
+        }
+
+        var requestedAt = DateTimeOffset.UtcNow;
+        await _stateService.SaveEtfRequestAsync(new Models.NewsRequestStateEntity { RequestedAt = requestedAt });
+
+        try
+        {
+            await _notificationService.SendMessageAsync(chatId,
+                "📈 On it — pulling the numbers and the story behind them. Give me a couple of minutes.");
+
+            var report = await _etfResearch.ResearchWeeklyPerformanceAsync(holdings, onDemand: true);
+
+            if (report.Incomplete)
+            {
+                await _notificationService.SendMessageAsync(chatId,
+                    "That ran long and I had to cut it off before it finished — try again in a few minutes.");
+                return;
+            }
+
+            if (report.Items.Count == 0 || string.IsNullOrWhiteSpace(report.TelegramMessage))
+            {
+                await _notificationService.SendMessageAsync(chatId,
+                    "I couldn't get reliable numbers for those right now — try again in a few minutes.");
+                return;
+            }
+
+            await _notificationService.SendPersonalAlertAsync(
+                EtfWeeklyReportFunction.AppendDroppedNote(report.TelegramMessage, dropped));
+
+            await _stateService.SaveEtfSnapshotsAsync(report.Items);
+
+            _logger.LogInformation("On-demand ETF report sent ({Count} funds)", report.Items.Count);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "On-demand ETF report failed");
+            await _notificationService.SendMessageAsync(chatId,
+                "The ETF check hit a snag — try again in a few minutes.");
+        }
+        finally
+        {
+            // Only clear the marker this run wrote — a run that outlived the timeout must
+            // not delete a successor's marker. A leaked marker expires on its own.
+            try
+            {
+                var current = await _stateService.GetEtfRequestAsync();
+                if (current is not null && EtfWeeklyReportFunction.IsSameRun(current.RequestedAt, requestedAt))
+                    await _stateService.ClearEtfRequestAsync();
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Failed to clear /etf marker — it will expire on its own");
+            }
+        }
+    }
+
+    // Dropped before the ticker check so "VWCE and IWDA" reads as the list it obviously is
+    private static readonly HashSet<string> Connectives = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "and", "&", "plus", "+"
+    };
+
+    // Words that make an argument a question rather than a ticker list. Ticker shape alone
+    // isn't enough — "/etf how are mine doing" is four token-shaped words and no tickers.
+    private static readonly HashSet<string> QuestionWords = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "a", "about", "all", "am", "and", "any", "are", "as", "at", "be", "been", "but", "by",
+        "can", "did", "do", "does", "doing", "done", "for", "from", "going", "good", "got",
+        "has", "have", "how", "i", "in", "is", "it", "its", "me", "mine", "much", "my", "no",
+        "not", "now", "of", "on", "one", "or", "our", "out", "over", "should", "so", "some",
+        "that", "the", "their", "them", "then", "there", "these", "they", "this", "those",
+        "to", "today", "up", "was", "week", "well", "were", "what", "when", "where", "which",
+        "who", "why", "will", "with", "yes", "you", "your"
+    };
+
+    // Tickers are short and alphanumeric (VWCE, SXR8.DE, 0P0000KSPA); a long list is fine
+    // (the watchlist cap trims it and says so). The question-word check only applies to
+    // multi-word arguments — a phrase like "how are mine doing" is all ticker-shaped words,
+    // while a lone token is taken at face value so real tickers (ALL, SO, IT) still work.
+    internal static bool LooksLikeSymbols(List<string> tokens) =>
+        tokens.Count > 0
+        && tokens.All(HasTickerShape)
+        && (tokens.Count == 1 || !tokens.Any(QuestionWords.Contains));
+
+    internal static bool HasTickerShape(string token) =>
+        System.Text.RegularExpressions.Regex.IsMatch(token, @"^[A-Za-z0-9][A-Za-z0-9._\-]{0,11}$");
+
     // "/joke [topic]" — available in both chats. In group chats Telegram appends the bot
     // name to commands ("/joke@alfred_bot"), so the mention is stripped before the topic.
     private static bool TryParseJokeCommand(string text, out string topic)
@@ -998,6 +1143,66 @@ public class TelegramWebhookFunction
 
                 await _stateService.DeleteUserFactAsync(factId);
                 return $"Fact {factId} forgotten.";
+            }
+
+            case "add_etf":
+            {
+                var symbol = input?["symbol"]?.GetValue<string>();
+                if (string.IsNullOrWhiteSpace(symbol))
+                    return "Error: no symbol provided.";
+                if (!HasTickerShape(symbol.Trim()))
+                    return $"Error: \"{symbol.Trim()}\" doesn't look like a ticker — ask Matthew which symbol he means.";
+
+                await _stateService.SaveEtfHoldingAsync(
+                    symbol.Trim(),
+                    input?["name"]?.GetValue<string>(),
+                    input?["notes"]?.GetValue<string>());
+                return $"Now tracking {symbol.Trim().ToUpperInvariant()} in the weekly ETF report.";
+            }
+
+            case "list_etfs":
+            {
+                var saved = await _stateService.GetEtfHoldingsAsync();
+                var (holdings, dropped) = EtfWeeklyReportFunction.BuildWatchlist(
+                    saved, _options.EtfTickers, _options.EtfMaxHoldings);
+                if (holdings.Count == 0)
+                    return "No ETFs are being tracked yet.";
+
+                var savedKeys = saved.Select(h => h.RowKey).ToHashSet(StringComparer.Ordinal);
+                var lines = holdings.Select(h =>
+                {
+                    var name = !string.IsNullOrWhiteSpace(h.Name) ? $" — {h.Name}" : "";
+                    var notes = !string.IsNullOrWhiteSpace(h.Notes) ? $" | {h.Notes}" : "";
+                    var last = h.LastReportedAt is not null
+                        ? $" | last reported {h.LastReportedAt:d MMM yyyy} at {h.LastQuote ?? "n/a"}"
+                        : "";
+                    var source = savedKeys.Contains(h.RowKey) ? "" : " | from the Alfred__EtfTickers setting";
+                    return $"- {h.Symbol}{name}{notes}{last}{source}";
+                });
+
+                var overflow = dropped > 0
+                    ? $"\n({dropped} more tracked than one report covers — the rest are left out.)"
+                    : "";
+                return string.Join("\n", lines) + overflow;
+            }
+
+            case "remove_etf":
+            {
+                var symbol = input?["symbol"]?.GetValue<string>();
+                if (string.IsNullOrWhiteSpace(symbol))
+                    return "Error: no symbol provided.";
+                if (!HasTickerShape(symbol.Trim()))
+                    return $"Error: \"{symbol.Trim()}\" doesn't look like a ticker — list_etfs shows the ones being tracked.";
+
+                await _stateService.DeleteEtfHoldingAsync(symbol.Trim());
+
+                var key = TableStorageStateService.EtfKey(symbol);
+                var stillConfigured = EtfWeeklyReportFunction.ParseSymbols(_options.EtfTickers)
+                    .Any(t => TableStorageStateService.EtfKey(t) == key);
+                return stillConfigured
+                    ? $"Dropped {symbol.Trim().ToUpperInvariant()} — but it is also listed in the Alfred__EtfTickers "
+                      + "app setting, so it will keep appearing until it is removed there."
+                    : $"Dropped {symbol.Trim().ToUpperInvariant()} from the weekly ETF report.";
             }
 
             case "snooze_email":

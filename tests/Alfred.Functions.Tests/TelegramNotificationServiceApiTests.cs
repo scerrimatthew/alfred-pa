@@ -176,4 +176,141 @@ public sealed class TelegramNotificationServiceApiTests : IDisposable
         Assert.Contains("Alfred__PersonalTelegramChatId", ex.Message);
         Assert.Empty(_http.Requests);
     }
+
+    // ---- HTML rejected: one plain-text retry ----
+
+    private const string OkResponse =
+        """{"ok":true,"result":{"message_id":1,"date":1723972000,"chat":{"id":555,"type":"private"},"text":"x"}}""";
+
+    private static string ParseErrorResponse(string description = "Bad Request: can't parse entities: Unsupported start tag \"2%\" at byte offset 20") =>
+        $$"""{"ok":false,"error_code":400,"description":{{JsonSerializer.Serialize(description)}}}""";
+
+    // Queue takes precedence over the constructor's route, so the first send fails and
+    // the retry falls through to the standard OK response
+    private void FailFirstSendWith(string body) =>
+        _http.EnqueueJson(body, System.Net.HttpStatusCode.BadRequest);
+
+    [Fact]
+    public async Task SendPersonalAlert_HtmlRejected_ResendsThatChunkAsPlainText()
+    {
+        FailFirstSendWith(ParseErrorResponse());
+
+        await _service.SendPersonalAlertAsync(
+            """📈 <b>VWCE</b> — CPI came in &lt;2%, see <a href="https://justetf.example/vwce">the numbers</a>""");
+
+        Assert.Equal(2, _http.Requests.Count);
+
+        var retry = SentBody(1);
+        Assert.Equal("777", ChatIdOf(retry));
+        // No parse mode on the retry — that is the whole point of the fallback
+        Assert.False(retry.TryGetProperty("parse_mode", out var mode) && mode.ValueKind != JsonValueKind.Null,
+            "the plain-text retry must not ask Telegram to parse HTML again");
+        Assert.Equal("📈 VWCE — CPI came in <2%, see the numbers (https://justetf.example/vwce)",
+            retry.GetProperty("text").GetString());
+        // ...and the delivery options still hold
+        Assert.True(retry.GetProperty("link_preview_options").GetProperty("is_disabled").GetBoolean());
+    }
+
+    [Fact]
+    public async Task SendPersonalAlert_HtmlRejected_KeepsTheButtonsOnTheRetry()
+    {
+        FailFirstSendWith(ParseErrorResponse());
+
+        await _service.SendPersonalAlertAsync("📈 <b>VWCE</b>",
+        [
+            new NotificationButton("👍", "nf:+:1"),
+            new NotificationButton("👎", "nf:-:1")
+        ]);
+
+        // Losing the buttons would silently cost the feedback loop
+        var keyboard = SentBody(1).GetProperty("reply_markup").GetProperty("inline_keyboard");
+        var row = Assert.Single(keyboard.EnumerateArray());
+        Assert.Equal(2, row.GetArrayLength());
+        Assert.Equal("nf:+:1", row[0].GetProperty("callback_data").GetString());
+    }
+
+    [Fact]
+    public async Task SendAlert_HtmlRejected_RetriesToTheSchoolChat()
+    {
+        FailFirstSendWith(ParseErrorResponse("Bad Request: can't parse entities: Unclosed start tag at byte offset 3"));
+
+        await _service.SendAlertAsync("📩 <b>PLAN");
+
+        Assert.Equal(2, _http.Requests.Count);
+        Assert.Equal("555", ChatIdOf(SentBody(1)));
+        Assert.Equal("📩 PLAN", SentBody(1).GetProperty("text").GetString());
+    }
+
+    [Fact]
+    public async Task SendMessage_HtmlRejected_RetriesToTheSameChat()
+    {
+        FailFirstSendWith(ParseErrorResponse());
+
+        await _service.SendMessageAsync(999, "<b>hi</b> &amp; bye");
+
+        Assert.Equal(2, _http.Requests.Count);
+        Assert.Equal("999", ChatIdOf(SentBody(1)));
+        Assert.Equal("hi & bye", SentBody(1).GetProperty("text").GetString());
+    }
+
+    [Fact]
+    public async Task SendMessage_RejectedForAnotherReason_IsNotRetried()
+    {
+        FailFirstSendWith("""{"ok":false,"error_code":400,"description":"Bad Request: chat not found"}""");
+
+        await Assert.ThrowsAsync<Telegram.Bot.Exceptions.ApiRequestException>(
+            () => _service.SendMessageAsync(999, "<b>hi</b>"));
+
+        // A retry here would fail identically and bury the real cause
+        Assert.Single(_http.Requests);
+    }
+
+    [Fact]
+    public async Task SendMessage_PlainTextRetryAlsoRejected_GivesUpInsteadOfLooping()
+    {
+        FailFirstSendWith(ParseErrorResponse());
+        FailFirstSendWith(ParseErrorResponse());
+
+        await Assert.ThrowsAsync<Telegram.Bot.Exceptions.ApiRequestException>(
+            () => _service.SendMessageAsync(999, "<b>hi</b>"));
+
+        Assert.Equal(2, _http.Requests.Count); // the send and exactly one retry
+    }
+
+    [Theory]
+    [InlineData("<b></b>")]
+    [InlineData("<i> </i>")]
+    public async Task SendMessage_ChunkThatFlattensToNothing_SurfacesTheOriginalFailure(string markup)
+    {
+        FailFirstSendWith(ParseErrorResponse());
+
+        var ex = await Assert.ThrowsAsync<Telegram.Bot.Exceptions.ApiRequestException>(
+            () => _service.SendMessageAsync(999, markup));
+
+        // Telegram rejects an empty message too, so the retry would just fail differently
+        // and bury the real complaint — better to let the parse failure through
+        Assert.Contains("parse entities", ex.Message);
+        Assert.Single(_http.Requests);
+    }
+
+    [Fact]
+    public async Task SendMessage_ChunkWithSomethingLeftAfterFlattening_StillRetries()
+    {
+        // The guard above must not swallow the ordinary case it sits next to
+        FailFirstSendWith(ParseErrorResponse());
+
+        await _service.SendMessageAsync(999, "<b>VWCE</b> up <2%");
+
+        Assert.Equal(2, _http.Requests.Count);
+        Assert.Equal("VWCE up <2%", SentBody(1).GetProperty("text").GetString());
+    }
+
+    [Fact]
+    public async Task SendMessage_AcceptedFirstTime_IsNeverResent()
+    {
+        await _service.SendMessageAsync(999, "<b>hi</b>");
+
+        Assert.Single(_http.Requests);
+        Assert.Equal("HTML", SentBody().GetProperty("parse_mode").GetString(), ignoreCase: true);
+    }
 }

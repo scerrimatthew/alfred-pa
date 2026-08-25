@@ -118,5 +118,28 @@ internal static class TestData
         };
     }
 
+    public static EtfHoldingEntity EtfHolding(
+        string symbol = "VWCE",
+        string? name = null,
+        string? notes = null,
+        DateTimeOffset? createdAt = null,
+        string? lastQuote = null,
+        double? lastWeekChangePercent = null,
+        DateTimeOffset? lastReportedAt = null)
+    {
+        return new EtfHoldingEntity
+        {
+            // Mirrors the table: the row key is always the normalized ticker
+            RowKey = Alfred.Functions.Services.State.TableStorageStateService.EtfKey(symbol),
+            Symbol = symbol,
+            Name = name,
+            Notes = notes,
+            CreatedAt = createdAt ?? new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero),
+            LastQuote = lastQuote,
+            LastWeekChangePercent = lastWeekChangePercent,
+            LastReportedAt = lastReportedAt
+        };
+    }
+
     public static TimeZoneInfo MaltaTz => TimeZoneInfo.FindSystemTimeZoneById("Europe/Malta");
 }
