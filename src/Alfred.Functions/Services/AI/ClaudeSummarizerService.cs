@@ -77,7 +77,9 @@ public class ClaudeSummarizerService : ISummarizerService
 
         var parameters = new MessageParameters
         {
-            Model = Anthropic.SDK.Constants.AnthropicModels.Claude45Sonnet,
+            // Haiku: triage is high-volume (every inbox email) and rubric-driven — the
+            // cheapest model that follows the rubric wins on cost
+            Model = Anthropic.SDK.Constants.AnthropicModels.Claude45Haiku,
             MaxTokens = 2048,
             Messages = [new Message(RoleType.User, prompt)]
         };
@@ -125,7 +127,8 @@ public class ClaudeSummarizerService : ISummarizerService
 
         var parameters = new MessageParameters
         {
-            Model = Anthropic.SDK.Constants.AnthropicModels.Claude46Opus,
+            // Sonnet: rewriting already-summarized data into a digest doesn't need Opus
+            Model = Anthropic.SDK.Constants.AnthropicModels.Claude46Sonnet,
             MaxTokens = 2048,
             System = [new SystemMessage(systemPrompt)],
             Messages = [new Message(RoleType.User, userPrompt)]
@@ -204,7 +207,8 @@ public class ClaudeSummarizerService : ISummarizerService
 
         var parameters = new MessageParameters
         {
-            Model = Anthropic.SDK.Constants.AnthropicModels.Claude46Opus,
+            // Sonnet: answering from provided context is well within Sonnet's reach
+            Model = Anthropic.SDK.Constants.AnthropicModels.Claude46Sonnet,
             MaxTokens = 2048,
             System = [new SystemMessage(systemPrompt)],
             Messages = [new Message(RoleType.User, userPrompt)]
@@ -261,7 +265,8 @@ public class ClaudeSummarizerService : ISummarizerService
 
         var parameters = new MessageParameters
         {
-            Model = Anthropic.SDK.Constants.AnthropicModels.Claude46Opus,
+            // Haiku: it's a two-line joke
+            Model = Anthropic.SDK.Constants.AnthropicModels.Claude45Haiku,
             MaxTokens = 512,
             System = [new SystemMessage(systemPrompt)],
             Messages = [new Message(RoleType.User, userPrompt)]
@@ -346,7 +351,8 @@ public class ClaudeSummarizerService : ISummarizerService
 
         var parameters = new MessageParameters
         {
-            Model = Anthropic.SDK.Constants.AnthropicModels.Claude46Opus,
+            // Sonnet: rewriting already-summarized data into a digest doesn't need Opus
+            Model = Anthropic.SDK.Constants.AnthropicModels.Claude46Sonnet,
             MaxTokens = 2048,
             System = [new SystemMessage(systemPrompt)],
             Messages = [new Message(RoleType.User, userPrompt)]
@@ -888,10 +894,15 @@ public class ClaudeSummarizerService : ISummarizerService
 
         var parameters = new MessageParameters
         {
-            Model = Anthropic.SDK.Constants.AnthropicModels.Claude46Opus,
+            // Sonnet handles the tool orchestration fine at 40% of Opus pricing
+            Model = Anthropic.SDK.Constants.AnthropicModels.Claude46Sonnet,
             // Web-search turns carry search narration on top of the answer
             MaxTokens = 4096,
-            System = [new SystemMessage(systemPrompt)],
+            // Cache breakpoint on the system prompt: the prefix (22 tool definitions +
+            // this large system prompt) is identical on every loop iteration, so
+            // iterations after the first re-read it at a tenth of the input price
+            PromptCaching = PromptCacheType.FineGrained,
+            System = [new SystemMessage(systemPrompt) { CacheControl = new CacheControl { Type = CacheControlType.ephemeral } }],
             Messages = messages,
             Tools = tools
         };

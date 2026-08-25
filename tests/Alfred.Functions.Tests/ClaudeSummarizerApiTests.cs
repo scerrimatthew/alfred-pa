@@ -122,7 +122,10 @@ public class ClaudeSummarizerApiTests
         var prompt = RequestUserText();
         Assert.Contains("GO bill", prompt);
         Assert.Contains("[r1] Monthly Bolt reports", prompt); // suppression rules travel with every triage
-        Assert.Equal(2048, RequestBody().GetProperty("max_tokens").GetInt32());
+        var body = RequestBody();
+        // Triage runs on every inbox email — the rubric fits Haiku at a fraction of the cost
+        Assert.Equal(Anthropic.SDK.Constants.AnthropicModels.Claude45Haiku, body.GetProperty("model").GetString());
+        Assert.Equal(2048, body.GetProperty("max_tokens").GetInt32());
     }
 
     // ---- Digests and Q&A ----
@@ -150,8 +153,10 @@ public class ClaudeSummarizerApiTests
         Assert.Contains("Sports Day", prompt);
         Assert.Contains("Read pages 1-3", prompt);
         // The persona and structure ride in the system prompt
-        var system = RequestBody().GetProperty("system");
-        Assert.Contains("Alfred", system.ToString());
+        var body = RequestBody();
+        Assert.Contains("Alfred", body.GetProperty("system").ToString());
+        // Rewriting already-summarized data into a digest is Sonnet work, not Opus work
+        Assert.Equal(Anthropic.SDK.Constants.AnthropicModels.Claude46Sonnet,body.GetProperty("model").GetString());
     }
 
     [Fact]
@@ -171,6 +176,8 @@ public class ClaudeSummarizerApiTests
         Assert.Contains("Sarah — Weekend plans", prompt);
         Assert.Contains("No personal emails today.", prompt);
         Assert.Contains("No upcoming actions.", prompt);
+        // Same right-sizing as the school digest: Sonnet, not Opus
+        Assert.Equal(Anthropic.SDK.Constants.AnthropicModels.Claude46Sonnet,RequestBody().GetProperty("model").GetString());
     }
 
     [Fact]
@@ -190,6 +197,8 @@ public class ClaudeSummarizerApiTests
         Assert.Contains("RECENT CONVERSATION", prompt);
         Assert.Contains("Q: what's on Monday?", prompt);
         Assert.Contains("and Tuesday?", prompt);
+        // Answering from provided context is Sonnet work, not Opus work
+        Assert.Equal(Anthropic.SDK.Constants.AnthropicModels.Claude46Sonnet,RequestBody().GetProperty("model").GetString());
     }
 
     // ---- Jokes ----
@@ -204,7 +213,8 @@ public class ClaudeSummarizerApiTests
         Assert.Equal("Why did the scarecrow win an award? <b>Outstanding in his field.</b>", joke);
 
         var body = RequestBody();
-        Assert.Equal(Anthropic.SDK.Constants.AnthropicModels.Claude46Opus, body.GetProperty("model").GetString());
+        // It's a two-line joke — Haiku tells it
+        Assert.Equal(Anthropic.SDK.Constants.AnthropicModels.Claude45Haiku, body.GetProperty("model").GetString());
         Assert.Equal(512, body.GetProperty("max_tokens").GetInt32());
         // The contract: one short, clean joke, no preamble. Read the system text with
         // GetString() — the SDK unicode-escapes angle brackets and ampersands on the
@@ -316,6 +326,12 @@ public class ClaudeSummarizerApiTests
         Assert.Contains("web_search", toolNames);
         // Web-search turns carry narration on top of the answer — the budget must cover it
         Assert.Equal(4096, body.GetProperty("max_tokens").GetInt32());
+        // Sonnet handles the tool orchestration at a fraction of Opus pricing
+        Assert.Equal(Anthropic.SDK.Constants.AnthropicModels.Claude46Sonnet,body.GetProperty("model").GetString());
+        // The big system prompt + tool definitions are identical on every loop iteration —
+        // the cache breakpoint makes every request after the first a cheap cached read
+        Assert.Equal("ephemeral",
+            body.GetProperty("system")[0].GetProperty("cache_control").GetProperty("type").GetString());
     }
 
     [Fact]

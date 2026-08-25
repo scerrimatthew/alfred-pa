@@ -27,8 +27,11 @@ internal static class WebResearchRunner
     // Runs one web-search research conversation to completion, resuming pause_turn stops.
     // Returns the final text answer, or null when the run never completed (budget spent
     // or resume cap hit) — callers report that as an incomplete run, not an empty result.
+    // Each caller picks its model per the cost policy in CLAUDE.md (Opus only where the
+    // relevance judgment is the feature).
     internal static async Task<string?> RunAsync(
         AnthropicClient client,
+        string model,
         string systemPrompt,
         string userPrompt,
         int maxSearches,
@@ -39,10 +42,13 @@ internal static class WebResearchRunner
 
         var parameters = new MessageParameters
         {
-            Model = "claude-opus-5",
+            Model = model,
             // Generous cap: the run carries thinking + multi-search reasoning + the write-up
             MaxTokens = 16000,
-            System = [new SystemMessage(systemPrompt)],
+            // Cache breakpoint on the system prompt (the standing brief): every
+            // pause_turn resume re-sends it, and cached reads cost a tenth
+            PromptCaching = PromptCacheType.FineGrained,
+            System = [new SystemMessage(systemPrompt) { CacheControl = new CacheControl { Type = CacheControlType.ephemeral } }],
             Messages = messages,
             Tools = [ServerTools.GetWebSearchTool(maxUses: maxSearches)]
         };

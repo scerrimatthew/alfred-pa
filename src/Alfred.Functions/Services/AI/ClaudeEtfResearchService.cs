@@ -31,8 +31,10 @@ public class ClaudeEtfResearchService : IEtfResearchService
         var today = DateTime.Now.ToString("dddd, d MMMM yyyy");
         var (systemPrompt, userPrompt) = BuildEtfPrompt(today, holdings, onDemand);
 
+        // Sonnet: a factual price read with light narrative — same tier as the news
+        // flash check under the cost policy, not an Opus-grade judgment task
         var responseText = await WebResearchRunner.RunAsync(
-            CreateClient(), systemPrompt, userPrompt,
+            CreateClient(), "claude-sonnet-5", systemPrompt, userPrompt,
             SearchBudgetFor(holdings.Count),
             onDemand ? "etf report (on demand)" : "weekly etf report",
             _logger);

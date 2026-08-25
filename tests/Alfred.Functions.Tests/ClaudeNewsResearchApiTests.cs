@@ -98,6 +98,10 @@ public class ClaudeNewsResearchApiTests
         Assert.Equal(12, tool.GetProperty("max_uses").GetInt32());
         // The watchlist brief rides in the system prompt
         Assert.Contains("WATCHLIST", body.GetProperty("system").ToString());
+        // ...with a cache breakpoint: every pause_turn resume re-sends the whole prefix,
+        // so the brief must be marked cacheable or each resume pays full input price
+        Assert.Equal("ephemeral",
+            body.GetProperty("system")[0].GetProperty("cache_control").GetProperty("type").GetString());
     }
 
     [Fact]
@@ -240,12 +244,17 @@ public class ClaudeNewsResearchApiTests
         Assert.Equal("Competitor launch", Assert.Single(flash.Items).Headline);
 
         var body = RequestBody();
-        Assert.Equal("claude-opus-5", body.GetProperty("model").GetString());
+        // The flash check runs every day and nearly always finds nothing — it rides the
+        // cheaper Sonnet tier; the evening digest keeps Opus for the real ranking work
+        Assert.Equal("claude-sonnet-5", body.GetProperty("model").GetString());
         // The flash check is a spot check: 6 searches, not the daily 12
         var tool = Assert.Single(body.GetProperty("tools").EnumerateArray());
         Assert.Equal("web_search", tool.GetProperty("name").GetString());
         Assert.Equal(6, tool.GetProperty("max_uses").GetInt32());
         Assert.Contains("NOT the evening news digest", body.GetProperty("system").ToString());
+        // The flash run resumes pause_turns too — same cache breakpoint as the daily
+        Assert.Equal("ephemeral",
+            body.GetProperty("system")[0].GetProperty("cache_control").GetProperty("type").GetString());
     }
 
     [Fact]
@@ -296,6 +305,11 @@ public class ClaudeNewsResearchApiTests
         var body = RequestBody();
         Assert.Equal("claude-opus-5", body.GetProperty("model").GetString());
         Assert.Equal(4096, body.GetProperty("max_tokens").GetInt32());
+        // A single un-resumed call — no cache breakpoint on the weekly system prompt
+        Assert.False(
+            body.GetProperty("system")[0].TryGetProperty("cache_control", out var cache)
+                && cache.ValueKind != JsonValueKind.Null,
+            "the weekly synthesis must not mark its system prompt cacheable");
         // Pure synthesis over what was already reported — no web search, no tools at all
         Assert.False(body.TryGetProperty("tools", out var tools) && tools.ValueKind == JsonValueKind.Array && tools.GetArrayLength() > 0,
             "the weekly synthesis must not carry any tools");

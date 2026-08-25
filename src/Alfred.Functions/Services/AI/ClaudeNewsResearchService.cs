@@ -33,7 +33,9 @@ public class ClaudeNewsResearchService : INewsResearchService
         var (systemPrompt, userPrompt) = BuildNewsPrompt(
             today, rules, recentlyReported, newsletterCandidates, Math.Max(1, _options.AiNewsMaxItems), topic);
 
-        var responseText = await RunResearchAsync(systemPrompt, userPrompt, maxSearches: 12, "daily digest");
+        // Opus for the evening digest: ranking a day of news against the watchlist is
+        // the judgment call the whole feature exists for
+        var responseText = await RunResearchAsync("claude-opus-5", systemPrompt, userPrompt, maxSearches: 12, "daily digest");
         return responseText is null ? new AiNewsDigest { Incomplete = true } : ParseNewsResponse(responseText);
     }
 
@@ -44,7 +46,9 @@ public class ClaudeNewsResearchService : INewsResearchService
         var today = DateTime.Now.ToString("dddd, d MMMM yyyy");
         var (systemPrompt, userPrompt) = BuildFlashPrompt(today, rules, recentlyReported);
 
-        var responseText = await RunResearchAsync(systemPrompt, userPrompt, maxSearches: 6, "midday flash check");
+        // Sonnet for the flash check: it runs every day and almost always concludes
+        // "nothing urgent" — a miss just waits for the evening Opus digest anyway
+        var responseText = await RunResearchAsync("claude-sonnet-5", systemPrompt, userPrompt, maxSearches: 6, "midday flash check");
         return responseText is null ? new AiNewsDigest { Incomplete = true } : ParseNewsResponse(responseText);
     }
 
@@ -72,8 +76,8 @@ public class ClaudeNewsResearchService : INewsResearchService
         return string.IsNullOrWhiteSpace(responseText) ? null : responseText.Trim();
     }
 
-    private Task<string?> RunResearchAsync(string systemPrompt, string userPrompt, int maxSearches, string runLabel) =>
-        WebResearchRunner.RunAsync(CreateClient(), systemPrompt, userPrompt, maxSearches, runLabel, _logger);
+    private Task<string?> RunResearchAsync(string model, string systemPrompt, string userPrompt, int maxSearches, string runLabel) =>
+        WebResearchRunner.RunAsync(CreateClient(), model, systemPrompt, userPrompt, maxSearches, runLabel, _logger);
 
     // Test seam: when set, replaces the live client (tests back it with a fake
     // HttpClient). Never set in production.
