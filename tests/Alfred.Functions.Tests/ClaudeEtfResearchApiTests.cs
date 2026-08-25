@@ -95,7 +95,8 @@ public class ClaudeEtfResearchApiTests
         var request = _http.Requests.Single();
         Assert.Equal("https://api.anthropic.com/v1/messages", request.Uri.GetLeftPart(UriPartial.Path));
         var body = RequestBody();
-        Assert.Equal("claude-opus-5", body.GetProperty("model").GetString());
+        // Sonnet per the cost policy: a factual price read, not an Opus-grade judgment task
+        Assert.Equal("claude-sonnet-5", body.GetProperty("model").GetString());
         Assert.Equal(16000, body.GetProperty("max_tokens").GetInt32());
         // One fund: the base budget plus one search for it
         var tool = Assert.Single(body.GetProperty("tools").EnumerateArray());
@@ -104,6 +105,10 @@ public class ClaudeEtfResearchApiTests
         // The watchlist itself rides in the user turn, the rules in the system prompt
         Assert.Contains("- VWCE — Vanguard FTSE All-World UCITS ETF", body.GetProperty("messages").ToString());
         Assert.Contains("Never give buy, sell, or hold advice", body.GetProperty("system").ToString());
+        // ...with the shared runner's cache breakpoint: every pause_turn resume re-sends
+        // the whole prefix, so the system prompt must be marked cacheable
+        Assert.Equal("ephemeral",
+            body.GetProperty("system")[0].GetProperty("cache_control").GetProperty("type").GetString());
     }
 
     [Fact]
