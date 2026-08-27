@@ -1,0 +1,100 @@
+name: retro-unread
+
+# One-off maintenance run, dispatched from a temp branch and deleted after use.
+#
+# Context: before commit c31ba8d, Alfred marked every processed personal email
+# read — including attention-worthy ones. This restores UNREAD on the 16
+# messages from the last 7 days that the new keep-unread rule would have left
+# unread (selected and reviewed in the Claude Code session that authored this).
+#
+# Credentials: Alfred's own Google OAuth creds (gmail.modify scope) are read
+# from the function app's settings via the Kudu API using the publish-profile
+# secret. Nothing secret-derived is ever printed; every extracted value is
+# masked before use.
+on:
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  retro-unread:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Restore UNREAD on selected messages
+        env:
+          PUBLISH_PROFILE: ${{ secrets.AZURE_FUNCTIONAPP_PUBLISH_PROFILE }}
+        run: |
+          set -euo pipefail
+
+          # Kudu credentials from the publish profile — never printed
+          CREDS=$(python3 - <<'PY'
+          import os, xml.etree.ElementTree as ET
+          root = ET.fromstring(os.environ["PUBLISH_PROFILE"])
+          for p in root.iter("publishProfile"):
+              if p.get("publishMethod") == "MSDeploy":
+                  print(p.get("userName"))
+                  print(p.get("userPWD"))
+                  break
+          PY
+          )
+          SCM_USER=$(echo "$CREDS" | sed -n 1p)
+          SCM_PASS=$(echo "$CREDS" | sed -n 2p)
+          unset CREDS
+          echo "::add-mask::$SCM_USER"
+          echo "::add-mask::$SCM_PASS"
+          test -n "$SCM_USER" && test -n "$SCM_PASS"
+
+          SETTINGS=$(curl -sf -u "$SCM_USER:$SCM_PASS" \
+            "https://func-matt-scerri-alfred-prod-westeu-001.scm.azurewebsites.net/api/settings")
+          CLIENT_ID=$(echo "$SETTINGS" | jq -r '.Google__ClientId // empty')
+          CLIENT_SECRET=$(echo "$SETTINGS" | jq -r '.Google__ClientSecret // empty')
+          REFRESH_TOKEN=$(echo "$SETTINGS" | jq -r '.Google__RefreshToken // empty')
+          unset SETTINGS
+          echo "::add-mask::$CLIENT_ID"
+          echo "::add-mask::$CLIENT_SECRET"
+          echo "::add-mask::$REFRESH_TOKEN"
+          test -n "$CLIENT_ID" && test -n "$CLIENT_SECRET" && test -n "$REFRESH_TOKEN"
+          echo "app settings retrieved"
+
+          ACCESS_TOKEN=$(curl -sf https://oauth2.googleapis.com/token \
+            -d client_id="$CLIENT_ID" \
+            -d client_secret="$CLIENT_SECRET" \
+            -d refresh_token="$REFRESH_TOKEN" \
+            -d grant_type=refresh_token | jq -r '.access_token // empty')
+          echo "::add-mask::$ACCESS_TOKEN"
+          test -n "$ACCESS_TOKEN"
+          echo "access token obtained"
+
+          HTTP=$(curl -s -o /dev/null -w "%{http_code}" \
+            -X POST "https://gmail.googleapis.com/gmail/v1/users/me/messages/batchModify" \
+            -H "Authorization: Bearer $ACCESS_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d '{"addLabelIds":["UNREAD"],"ids":[
+                  "1a0420f9244fa484","1a04227547f1d19b","1a0425ecbf4eacb9",
+                  "1a04265d7a184a9c","1a04211f0e34e245","1a0420fd40463ce9",
+                  "1a04336de447f6d7","1a03cfa0e0c73376","1a03cdd974506af9",
+                  "1a03aff7a0b483bc","1a03af8eadb7529f","1a0367903a4387a3",
+                  "1a02f39566dfdd2a","1a02a351e722f816","1a0249cfdd93647a",
+                  "1a0233161a32f391"]}')
+          echo "batchModify HTTP $HTTP"
+          test "$HTTP" = "204"
+
+          # Spot-check that UNREAD really landed on one of them
+          curl -sf -H "Authorization: Bearer $ACCESS_TOKEN" \
+            "https://gmail.googleapis.com/gmail/v1/users/me/messages/1a0420f9244fa484?format=minimal" \
+            | jq -e '.labelIds | index("UNREAD")' >/dev/null
+          echo "verified: UNREAD present on spot-checked message"
+
+      - name: Notify Telegram (success)
+        if: success()
+        run: |
+          curl -s "https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/sendMessage" \
+            -d chat_id="${{ secrets.TELEGRAM_CHAT_ID }}" \
+            --data-urlencode text="🔖 Restored unread on 16 attention-worthy emails from the last week (invoices, block-management threads, bookings, official deadlines) — they were marked read under the old behavior."
+
+      - name: Notify Telegram (failure)
+        if: failure()
+        run: |
+          curl -s "https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/sendMessage" \
+            -d chat_id="${{ secrets.TELEGRAM_CHAT_ID }}" \
+            --data-urlencode text="Retro-unread run failed — no emails were changed unless the log says otherwise. Check the GitHub Actions log."
