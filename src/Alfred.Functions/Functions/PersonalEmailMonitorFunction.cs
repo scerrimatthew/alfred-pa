@@ -126,7 +126,14 @@ public class PersonalEmailMonitorFunction
                         email.MessageId, email.Subject, email.SenderName, triage.Summary, triage.Category, triage.Suppressed, email.ThreadId, email.SenderEmail,
                         needsReply: triage.NeedsReply && !triage.Suppressed);
 
-                    await _gmailReader.MarkAsReadAndLabelAsync(email.MessageId, LabelNames.ForPersonal(triage.Category));
+                    // Attention-worthy emails stay unread in Gmail so they remain visible in
+                    // the inbox until Matthew deals with them; only quietly-filed mail is
+                    // marked read. RequiresAttention already covers attention-rule matches
+                    // and fraud warnings.
+                    if (!triage.Suppressed && triage.RequiresAttention)
+                        await _gmailReader.LabelWithoutMarkingReadAsync(email.MessageId, LabelNames.ForPersonal(triage.Category));
+                    else
+                        await _gmailReader.MarkAsReadAndLabelAsync(email.MessageId, LabelNames.ForPersonal(triage.Category));
 
                     // Newsletter-mined story leads feed the evening AI-news digest — best-effort
                     if (triage.NewsLeads.Count > 0)

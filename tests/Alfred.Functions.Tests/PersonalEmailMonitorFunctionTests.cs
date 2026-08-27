@@ -86,6 +86,11 @@ public class PersonalEmailMonitorFunctionTests
         Assert.Equal("mu:m1", buttons[0].CallbackData);
         Assert.Equal("sup:m1", buttons[1].CallbackData);
         Assert.Equal("sn1:m1", buttons[2].CallbackData);
+
+        // Attention-worthy mail stays unread in Gmail so it remains visible in the
+        // inbox until dealt with — labeled only, never marked read
+        await _gmail.Received(1).LabelWithoutMarkingReadAsync("m1", "Invoice");
+        await _gmail.DidNotReceiveWithAnyArgs().MarkAsReadAndLabelAsync(default!, default!);
     }
 
     [Fact]
@@ -117,6 +122,7 @@ public class PersonalEmailMonitorFunctionTests
         await _state.Received(1).MarkPersonalEmailProcessedAsync(
             "m1", "Newsletter", email.SenderName, "Just a newsletter.", "notification", false, email.ThreadId, "news@shop.com", false, null);
         await _gmail.Received(1).MarkAsReadAndLabelAsync("m1", "Notification");
+        await _gmail.DidNotReceiveWithAnyArgs().LabelWithoutMarkingReadAsync(default!, default!);
         await _state.Received(1).RecordSenderSeenAsync("news@shop.com", email.SenderName, true, null, false);
     }
 
@@ -132,6 +138,11 @@ public class PersonalEmailMonitorFunctionTests
 
         await _notifications.Received(1).SendPersonalAlertAsync(
             Arg.Is<string>(m => m.StartsWith("A quiet one.")), Arg.Any<IReadOnlyList<NotificationButton>?>());
+
+        // Keeping the unread state is keyed to RequiresAttention, not to whether a
+        // notification went out — a notify-all courtesy alert still files the email as read
+        await _gmail.ReceivedWithAnyArgs(1).MarkAsReadAndLabelAsync(default!, default!);
+        await _gmail.DidNotReceiveWithAnyArgs().LabelWithoutMarkingReadAsync(default!, default!);
     }
 
     [Fact]
@@ -154,7 +165,10 @@ public class PersonalEmailMonitorFunctionTests
         await _state.Received(1).MarkPersonalEmailProcessedAsync(
             "m1", email.Subject, email.SenderName, Arg.Any<string>(), Arg.Any<string?>(),
             true, email.ThreadId, email.SenderEmail, false, null);
+        // Suppressed wins over RequiresAttention (true here, e.g. via a fraud flag or
+        // attention rule set upstream): a suppressed email is still marked read
         await _gmail.ReceivedWithAnyArgs(1).MarkAsReadAndLabelAsync(default!, default!);
+        await _gmail.DidNotReceiveWithAnyArgs().LabelWithoutMarkingReadAsync(default!, default!);
         await _state.Received(1).RecordSenderSeenAsync(email.SenderEmail, email.SenderName, true, null, false);
     }
 
@@ -198,6 +212,10 @@ public class PersonalEmailMonitorFunctionTests
 
         await _notifications.DidNotReceiveWithAnyArgs().SendPersonalAlertAsync(default!);
         await _state.ReceivedWithAnyArgs(1).MarkPersonalEmailProcessedAsync(default!, default!, default!, default!);
+        // The keep-unread branch keys off RequiresAttention alone — an attention-worthy
+        // email Matthew already read himself is labeled without touching its read state
+        await _gmail.ReceivedWithAnyArgs(1).LabelWithoutMarkingReadAsync(default!, default!);
+        await _gmail.DidNotReceiveWithAnyArgs().MarkAsReadAndLabelAsync(default!, default!);
     }
 
     [Fact]
