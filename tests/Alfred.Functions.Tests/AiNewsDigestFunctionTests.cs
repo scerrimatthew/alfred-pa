@@ -29,12 +29,22 @@ public class AiNewsDigestFunctionTests
             .Returns(new AiNewsDigest());
     }
 
-    private AiNewsDigestFunction CreateFunction(Action<AlfredOptions>? mutate = null) =>
-        new(_research, _notifications, _state, Options(o =>
+    // Every test pins "today" (Malta time) to a known digest day by default (offset 0 from
+    // the epoch, i.e. even -> digest day) so the every-other-day cadence gate never makes an
+    // existing end-to-end test flaky depending on which real-world day CI happens to run on.
+    // Tests that specifically exercise the off-day path pass their own todayMalta.
+    private static readonly DateTime KnownDigestDay = new(2026, 8, 28);
+
+    private AiNewsDigestFunction CreateFunction(Action<AlfredOptions>? mutate = null, DateTime? todayMalta = null)
+    {
+        var function = new AiNewsDigestFunction(_research, _notifications, _state, Options(o =>
         {
             o.PersonalTelegramChatId = "777";
             mutate?.Invoke(o);
         }), NullLogger<AiNewsDigestFunction>.Instance);
+        function.TodayMaltaOverride = () => todayMalta ?? KnownDigestDay;
+        return function;
+    }
 
     private static TimerInfo Timer => new();
 
@@ -146,13 +156,71 @@ public class AiNewsDigestFunctionTests
     }
 
     [Fact]
-    public async Task CandidateLookback_IsAboutTwentySixHours()
+    public async Task CandidateLookback_IsAboutFiftyHours()
     {
         await CreateFunction().Run(Timer);
 
-        var expected = DateTimeOffset.UtcNow.AddHours(-26);
+        var expected = DateTimeOffset.UtcNow.AddHours(-50);
         await _state.Received(1).GetNewsCandidatesSinceAsync(
             Arg.Is<DateTimeOffset>(since => (since - expected).Duration() < TimeSpan.FromMinutes(5)));
+    }
+
+    // ---- Every-other-day cadence gate ----
+
+    [Fact]
+    public async Task OffDay_SkipsWithoutTouchingStateResearchOrNotifications()
+    {
+        // Offset 1 from the epoch (2026-08-29) is odd -> not a digest day.
+        var function = CreateFunction(todayMalta: new DateTime(2026, 8, 29));
+
+        await function.Run(Timer);
+
+        await _state.DidNotReceive().GetNewsRulesAsync();
+        await _state.DidNotReceiveWithAnyArgs().GetReportedNewsSinceAsync(default);
+        await _state.DidNotReceiveWithAnyArgs().GetNewsCandidatesSinceAsync(default);
+        await _research.DidNotReceiveWithAnyArgs().ResearchDailyNewsAsync(default!, default!, default!);
+        await _notifications.DidNotReceiveWithAnyArgs().SendPersonalAlertAsync(default!);
+        await _state.DidNotReceiveWithAnyArgs().SaveReportedNewsAsync(default!);
+    }
+
+    [Fact]
+    public void IsDigestDay_KnownEpochDayIsADigestDay()
+    {
+        Assert.True(AiNewsDigestFunction.IsDigestDay(new DateTime(2026, 8, 28)));
+    }
+
+    [Fact]
+    public void IsDigestDay_DayAfterEpochIsNotADigestDay()
+    {
+        Assert.False(AiNewsDigestFunction.IsDigestDay(new DateTime(2026, 8, 29)));
+    }
+
+    [Fact]
+    public void IsDigestDay_AlternatesOnConsecutiveDays()
+    {
+        Assert.True(AiNewsDigestFunction.IsDigestDay(new DateTime(2026, 8, 28)));
+        Assert.False(AiNewsDigestFunction.IsDigestDay(new DateTime(2026, 8, 29)));
+        Assert.True(AiNewsDigestFunction.IsDigestDay(new DateTime(2026, 8, 30)));
+    }
+
+    [Fact]
+    public void IsDigestDay_ParityAlternatesAcrossANonLeapYearBoundary()
+    {
+        // 2026 has 365 days (not a leap year). Compute the expected parity directly from
+        // the epoch day-count here — rather than hardcoding true/false — so this test would
+        // catch a regression to a day-of-year-based calculation, which flips parity twice
+        // across a year boundary (once for the leftover day, once for the reset to day 1)
+        // instead of the once-per-day alternation a fixed-epoch day-count guarantees.
+        var epoch = new DateTime(2026, 8, 28);
+        var dec31 = new DateTime(2026, 12, 31);
+        var jan1 = new DateTime(2027, 1, 1);
+
+        var expectedDec31 = (dec31 - epoch).Days % 2 == 0;
+        var expectedJan1 = (jan1 - epoch).Days % 2 == 0;
+
+        Assert.NotEqual(expectedDec31, expectedJan1);
+        Assert.Equal(expectedDec31, AiNewsDigestFunction.IsDigestDay(dec31));
+        Assert.Equal(expectedJan1, AiNewsDigestFunction.IsDigestDay(jan1));
     }
 
     [Fact]

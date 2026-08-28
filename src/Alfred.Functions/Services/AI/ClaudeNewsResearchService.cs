@@ -147,7 +147,7 @@ public class ClaudeNewsResearchService : INewsResearchService
               Matthew asked for an on-demand sweep on: "{topic}".
               Focus every search on that topic. The watchlist still frames why a story
               matters, but for this run topic relevance beats watchlist breadth, and the
-              time window may extend beyond 48 hours when the topic needs the context.
+              time window may extend beyond 72 hours when the topic needs the context.
               """
             : "";
 
@@ -169,7 +169,8 @@ public class ClaudeNewsResearchService : INewsResearchService
 
             How to research:
             - Run several targeted web searches across the watchlist categories. Focus on the
-              last 24-48 hours; a slightly older story is only worth including if it is
+              last 24-72 hours — this briefing runs every other day, so that fully covers the
+              gap since the last one; a slightly older story is only worth including if it is
               significant and clearly not yet covered.
             - Prefer primary sources (the study, the announcement, the ruling) over aggregator
               rewrites; link the best single source per story.
