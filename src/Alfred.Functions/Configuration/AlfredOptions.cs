@@ -43,10 +43,11 @@ public class AlfredOptions
     public bool AiNewsFlashEnabled { get; set; } = true;
     public bool AiNewsWeeklyEnabled { get; set; } = true;
 
-    // Weekly ETF report (Saturday-morning timer, personal chat). Also requires
+    // Weekly ETF report (Saturday-morning timer, personal chat). Off by default; set
+    // Alfred__EtfReportEnabled=true to re-enable the timer (on-demand /etf still works). Also requires
     // PersonalTelegramChatId. EtfTickers seeds the watchlist from configuration
     // (comma-separated, e.g. "VWCE,SXR8.DE"); Matthew adds or drops funds from chat.
-    public bool EtfReportEnabled { get; set; } = true;
+    public bool EtfReportEnabled { get; set; } = false;
     public string EtfTickers { get; set; } = string.Empty;
     public int EtfMaxHoldings { get; set; } = 8;
 

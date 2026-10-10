@@ -41,6 +41,7 @@ public class EtfWeeklyReportFunctionTests
     private EtfWeeklyReportFunction CreateFunction(Action<AlfredOptions>? mutate = null) =>
         new(_research, _notifications, _state, Options(o =>
         {
+            o.EtfReportEnabled = true; // default is off; these tests exercise the enabled timer
             o.PersonalTelegramChatId = "777";
             mutate?.Invoke(o);
         }), NullLogger<EtfWeeklyReportFunction>.Instance);
@@ -132,7 +133,7 @@ public class EtfWeeklyReportFunctionTests
 
         var logger = Substitute.For<Microsoft.Extensions.Logging.ILogger<EtfWeeklyReportFunction>>();
         await new EtfWeeklyReportFunction(_research, _notifications, _state,
-            Options(o => o.PersonalTelegramChatId = "777"), logger).Run(Timer);
+            Options(o => { o.EtfReportEnabled = true; o.PersonalTelegramChatId = "777"; }), logger).Run(Timer);
 
         await _notifications.Received(1).SendPersonalErrorAsync(
             Arg.Is<string>(m => m.Contains("telegram down") && !m.Contains("tables down")));
