@@ -39,9 +39,9 @@ public class PersonalEmailMonitorFunction
         _logger = logger;
     }
 
-    // Offset from EmailMonitor (:00/:15/:30/:45) to spread Gmail and Claude API load
+    // Offset from EmailMonitor (:00/:30) to spread Gmail and Claude API load
     [Function("PersonalEmailMonitor")]
-    public async Task Run([TimerTrigger("0 5/15 * * * *")] TimerInfo timerInfo)
+    public async Task Run([TimerTrigger("0 5/30 * * * *")] TimerInfo timerInfo)
     {
         if (string.IsNullOrWhiteSpace(_alfredOptions.PersonalTelegramChatId))
         {

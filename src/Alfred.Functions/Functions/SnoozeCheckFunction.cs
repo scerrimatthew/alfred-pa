@@ -30,7 +30,7 @@ public class SnoozeCheckFunction
 
     // Offset from the two email monitors (:00 and :05) to spread the load
     [Function("SnoozeCheck")]
-    public async Task Run([TimerTrigger("0 10/15 * * * *")] TimerInfo timerInfo)
+    public async Task Run([TimerTrigger("0 10/30 * * * *")] TimerInfo timerInfo)
     {
         if (string.IsNullOrWhiteSpace(_options.PersonalTelegramChatId))
             return;

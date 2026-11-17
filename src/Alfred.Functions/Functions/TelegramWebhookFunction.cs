@@ -562,7 +562,7 @@ public class TelegramWebhookFunction
 
         await _notificationService.SendMessageAsync(chatId,
             $"Backfill started — I'll quietly work through the last <b>{days} days</b> of inbox email in batches "
-            + "(roughly every 15 minutes), categorizing, labeling, and picking up future deadlines. "
+            + "(roughly every 30 minutes), categorizing, labeling, and picking up future deadlines. "
             + "No notifications along the way; I'll message you once when it's done. "
             + "Anything already processed is skipped automatically.");
     }

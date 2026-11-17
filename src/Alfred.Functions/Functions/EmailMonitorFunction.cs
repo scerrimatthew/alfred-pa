@@ -39,7 +39,7 @@ public class EmailMonitorFunction
     }
 
     [Function("EmailMonitor")]
-    public async Task Run([TimerTrigger("0 */15 * * * *")] TimerInfo timerInfo)
+    public async Task Run([TimerTrigger("0 */30 * * * *")] TimerInfo timerInfo)
     {
         _logger.LogInformation("EmailMonitor triggered at {Time}", DateTime.UtcNow);
 
