@@ -162,6 +162,11 @@ public class TelegramWebhookFunction
                     | System.Text.RegularExpressions.RegexOptions.Singleline);
             if (isPersonalChat && newsMatch.Success)
             {
+                if (!_options.AiNewsEnabled)
+                {
+                    await _notificationService.SendMessageAsync(chatId, "AI news is switched off.");
+                    return req.CreateResponse(System.Net.HttpStatusCode.OK);
+                }
                 await HandleNewsCommandAsync(chatId, newsMatch.Groups["topic"].Value.Trim());
                 return req.CreateResponse(System.Net.HttpStatusCode.OK);
             }
@@ -174,6 +179,11 @@ public class TelegramWebhookFunction
                     | System.Text.RegularExpressions.RegexOptions.Singleline);
             if (isPersonalChat && etfMatch.Success)
             {
+                if (!_options.EtfReportEnabled)
+                {
+                    await _notificationService.SendMessageAsync(chatId, "The ETF report is switched off.");
+                    return req.CreateResponse(System.Net.HttpStatusCode.OK);
+                }
                 await HandleEtfCommandAsync(chatId, etfMatch.Groups["symbols"].Value.Trim());
                 return req.CreateResponse(System.Net.HttpStatusCode.OK);
             }

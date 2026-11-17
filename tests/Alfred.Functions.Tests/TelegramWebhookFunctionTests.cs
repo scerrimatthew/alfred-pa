@@ -88,6 +88,9 @@ public class TelegramWebhookFunctionTests
             {
                 o.TelegramWebhookSecret = Secret;
                 o.PersonalTelegramChatId = PersonalChatId.ToString();
+                // Both features default to off in production; the enabled path is the baseline here
+                o.AiNewsEnabled = true;
+                o.EtfReportEnabled = true;
                 mutate?.Invoke(o);
             }),
             NullLogger<TelegramWebhookFunction>.Instance);
@@ -784,6 +787,7 @@ public class TelegramWebhookFunctionTests
             Options(o =>
             {
                 o.TelegramWebhookSecret = Secret;
+                o.AiNewsEnabled = true;
                 o.PersonalTelegramChatId = PersonalChatId.ToString();
             }),
             logger);
@@ -1313,6 +1317,7 @@ public class TelegramWebhookFunctionTests
             Options(o =>
             {
                 o.TelegramWebhookSecret = Secret;
+                o.EtfReportEnabled = true;
                 o.PersonalTelegramChatId = PersonalChatId.ToString();
             }),
             logger);
@@ -1362,6 +1367,62 @@ public class TelegramWebhookFunctionTests
             Arg.Any<List<ProcessedEmailEntity>>(), Arg.Any<List<Event>>(), Arg.Any<List<ReportedNewsEntity>>(),
             Arg.Any<List<UserFactEntity>>(), Arg.Any<List<ChatTurnEntity>>(),
             Arg.Any<Func<string, System.Text.Json.Nodes.JsonNode?, Task<string>>>());
+    }
+
+    [Theory]
+    [InlineData("/ai-news")]
+    [InlineData("/ai_news")]
+    [InlineData("/ai-news EU AI Act")]
+    public async Task AiNews_WhenDisabled_RepliesSwitchedOff_WithoutResearchOrMarker(string text)
+    {
+        var status = await RunAsync(MessageUpdate(PersonalChatId, UserId, text), mutate: o => o.AiNewsEnabled = false);
+
+        Assert.Equal(HttpStatusCode.OK, status);
+        await _notifications.Received(1).SendMessageAsync(PersonalChatId, "AI news is switched off.");
+        await _newsResearch.DidNotReceiveWithAnyArgs().ResearchDailyNewsAsync(default!, default!, default!, default);
+        await _state.DidNotReceiveWithAnyArgs().SaveNewsRequestAsync(default!);
+    }
+
+    [Fact]
+    public async Task AiNews_WhenEnabled_ResearchesAndDoesNotReplySwitchedOff()
+    {
+        SetUpNewsResult();
+
+        await RunAsync(MessageUpdate(PersonalChatId, UserId, "/ai-news"), mutate: o => o.AiNewsEnabled = true);
+
+        await _newsResearch.Received(1).ResearchDailyNewsAsync(
+            Arg.Any<List<NewsRuleEntity>>(), Arg.Any<List<ReportedNewsEntity>>(),
+            Arg.Any<List<NewsCandidateEntity>>(), null);
+        await _notifications.DidNotReceive().SendMessageAsync(PersonalChatId, "AI news is switched off.");
+    }
+
+    [Theory]
+    [InlineData("/etf")]
+    [InlineData("/etfs")]
+    [InlineData("/etf VWCE, IWDA")]
+    public async Task Etf_WhenDisabled_RepliesSwitchedOff_WithoutResearchOrMarker(string text)
+    {
+        TrackEtfs("VWCE");
+
+        var status = await RunAsync(MessageUpdate(PersonalChatId, UserId, text), mutate: o => o.EtfReportEnabled = false);
+
+        Assert.Equal(HttpStatusCode.OK, status);
+        await _notifications.Received(1).SendMessageAsync(PersonalChatId, "The ETF report is switched off.");
+        await _etfResearch.DidNotReceiveWithAnyArgs().ResearchWeeklyPerformanceAsync(default!, default);
+        await _state.DidNotReceiveWithAnyArgs().SaveEtfRequestAsync(default!);
+    }
+
+    [Fact]
+    public async Task Etf_WhenEnabled_ResearchesAndDoesNotReplySwitchedOff()
+    {
+        TrackEtfs("VWCE");
+        SetUpEtfResult();
+
+        await RunAsync(MessageUpdate(PersonalChatId, UserId, "/etf"), mutate: o => o.EtfReportEnabled = true);
+
+        await _etfResearch.Received(1).ResearchWeeklyPerformanceAsync(
+            Arg.Is<List<EtfHoldingEntity>>(h => h.Count == 1), true);
+        await _notifications.DidNotReceive().SendMessageAsync(PersonalChatId, "The ETF report is switched off.");
     }
 
     [Fact]

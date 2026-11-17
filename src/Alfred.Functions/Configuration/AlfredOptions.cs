@@ -34,8 +34,8 @@ public class AlfredOptions
     public string SummerBreakEnd { get; set; } = "09-20";
 
     // Daily AI-news digest (evening timer, personal chat). Also requires
-    // PersonalTelegramChatId to be set.
-    public bool AiNewsEnabled { get; set; } = true;
+    // PersonalTelegramChatId to be set. Off by default; also gates /ai-news.
+    public bool AiNewsEnabled { get; set; } = false;
     public int AiNewsMaxItems { get; set; } = 5;
 
     // Midday flash check for flag-level news that can't wait for the evening digest,
@@ -44,9 +44,10 @@ public class AlfredOptions
     public bool AiNewsWeeklyEnabled { get; set; } = true;
 
     // Weekly ETF report (Saturday-morning timer, personal chat). Also requires
-    // PersonalTelegramChatId. EtfTickers seeds the watchlist from configuration
-    // (comma-separated, e.g. "VWCE,SXR8.DE"); Matthew adds or drops funds from chat.
-    public bool EtfReportEnabled { get; set; } = true;
+    // PersonalTelegramChatId. Off by default; also gates /etf. EtfTickers seeds the
+    // watchlist from configuration (comma-separated, e.g. "VWCE,SXR8.DE"); Matthew adds
+    // or drops funds from chat.
+    public bool EtfReportEnabled { get; set; } = false;
     public string EtfTickers { get; set; } = string.Empty;
     public int EtfMaxHoldings { get; set; } = 8;
 

@@ -33,6 +33,7 @@ public class AiNewsDigestFunctionTests
         new(_research, _notifications, _state, Options(o =>
         {
             o.PersonalTelegramChatId = "777";
+            o.AiNewsEnabled = true; // off by default in production
             mutate?.Invoke(o);
         }), NullLogger<AiNewsDigestFunction>.Instance);
 

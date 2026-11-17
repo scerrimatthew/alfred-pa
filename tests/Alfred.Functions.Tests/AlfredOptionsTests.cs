@@ -26,11 +26,11 @@ public class AlfredOptionsTests
         Assert.False(options.SendEmptyDigest);
         Assert.Equal(string.Empty, options.PersonalTelegramChatId);
         Assert.Equal(string.Empty, options.AllowedTelegramUserIds);
-        Assert.True(options.AiNewsEnabled);
+        Assert.False(options.AiNewsEnabled);
         Assert.Equal(5, options.AiNewsMaxItems);
         Assert.True(options.AiNewsFlashEnabled);
         Assert.True(options.AiNewsWeeklyEnabled);
-        Assert.True(options.EtfReportEnabled);
+        Assert.False(options.EtfReportEnabled);
         Assert.Equal(string.Empty, options.EtfTickers);
         Assert.Equal(8, options.EtfMaxHoldings);
     }
